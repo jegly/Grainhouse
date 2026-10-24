@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+adw = { version = "0.9", package = "libadwaita", features = ["v1_6"], optional = true }
+async-channel = { version = "2", optional = true }
+gtk = { version = "0.11", package = "gtk4", features = ["v4_14"], optional = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
 ort = "=2.0.0-rc.15"
 rawler = "0.8.0"
@@ -17,3 +20,16 @@ codegen-units = 4
 
 [profile.dev]
 opt-level = 2
+
+[features]
+default = ["gui"]
+gui = ["dep:gtk", "dep:adw", "dep:async-channel"]
+
+[[bin]]
+name = "alpha-studio"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "alpha-cli"
+path = "src/bin/alpha-cli.rs"

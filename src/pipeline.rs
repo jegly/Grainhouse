@@ -256,7 +256,7 @@ fn to_px(frac: &[f32], mw: usize, mh: usize) -> Vec<f32> {
 }
 
 /// Crowd remover / Trails over several photos (oldest first), then the film look and finishing.
-pub fn render_multi(sessions: &[Session], s: &Settings, long: usize) -> Result<Image, String> {
+pub fn render_multi(sessions: &[&Session], s: &Settings, long: usize) -> Result<Image, String> {
     let frames: Vec<Image> = sessions.iter().map(|x| x.base(s.raw).fit(long)).collect();
     let kind = if s.effect == TRAILS { fx::multishot::TRAILS } else { fx::multishot::CROWD };
     let mut img = fx::multishot::combine(&frames, kind, s.amount, s.colour)?;

@@ -85,7 +85,7 @@ fn main() {
         }))
         .collect();
     let t1 = Instant::now();
-    let result = if pipeline::is_multi(s.effect) { pipeline::render_multi(&sessions, &s, long) } else { sessions[0].render(&s, long) };
+    let result = if pipeline::is_multi(s.effect) { pipeline::render_multi(&sessions.iter().collect::<Vec<_>>(), &s, long) } else { sessions[0].render(&s, long) };
     let img = result.unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1)
