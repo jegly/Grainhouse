@@ -3,3 +3,7 @@ testdata/
 
 CLAUDE.md
 .claude/
+parts/
+stage/
+prime/
+*.snap

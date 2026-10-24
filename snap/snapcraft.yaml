@@ -1,0 +1,60 @@
+name: grainhouse
+base: core26
+version: '1.0.0'
+title: Grainhouse
+summary: Photo editor with film looks, AI effects and upscaling
+description: |
+  Grainhouse edits RAW files and JPEGs: white balance, tone curve, colour mixer
+  and grading, crop, lens corrections, noise reduction and local adjustments with
+  AI masks. It adds 153 film stocks, creative looks, your own .cube LUTs, camera
+  looks, 30 effects (many using AI to find the people in your photo), diffusion
+  filters, film frames, and Real-ESRGAN upscaling on export.
+
+  Everything runs on your own computer.
+
+  To open photos on USB drives or SD cards, run:
+  sudo snap connect grainhouse:removable-media
+license: AGPL-3.0-only
+grade: stable
+confinement: strict
+icon: data/io.github.jegly.Grainhouse.svg
+website: https://github.com/jegly/Grainhouse
+source-code: https://github.com/jegly/Grainhouse
+issues: https://github.com/jegly/Grainhouse/issues
+
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+
+apps:
+  grainhouse:
+    command: usr/bin/grainhouse
+    extensions: [gnome]
+    common-id: io.github.jegly.Grainhouse
+    desktop: usr/share/applications/io.github.jegly.Grainhouse.desktop
+    plugs: [home, removable-media]
+  cli:
+    command: usr/bin/grainhouse --cli
+    extensions: [gnome]
+    plugs: [home, removable-media]
+
+parts:
+  grainhouse:
+    # The release binary, built beforehand with `cargo build --release` (it links against the same
+    # GTK 4 and libadwaita that the gnome-core26 runtime provides).
+    plugin: nil
+    override-build: |
+      set -eu
+      ID=io.github.jegly.Grainhouse
+      SRC="$CRAFT_PROJECT_DIR"
+      test -x "$SRC/target/release/grainhouse" || { echo "Run cargo build --release first"; exit 1; }
+      install -Dm755 "$SRC/target/release/grainhouse" "$CRAFT_PART_INSTALL/usr/bin/grainhouse"
+      strip "$CRAFT_PART_INSTALL/usr/bin/grainhouse"
+      ln -sf grainhouse "$CRAFT_PART_INSTALL/usr/bin/grainhouse-cli"
+      install -Dm644 "$SRC/data/$ID.svg" "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/scalable/apps/$ID.svg"
+      install -Dm644 "$SRC/data/$ID.metainfo.xml" "$CRAFT_PART_INSTALL/usr/share/metainfo/$ID.metainfo.xml"
+      mkdir -p "$CRAFT_PART_INSTALL/usr/share/applications"
+      sed -e "s|^Icon=.*|Icon=\${SNAP}/usr/share/icons/hicolor/scalable/apps/$ID.svg|" \
+        "$SRC/data/$ID.desktop" > "$CRAFT_PART_INSTALL/usr/share/applications/$ID.desktop.tmp"
+      mv "$CRAFT_PART_INSTALL/usr/share/applications/$ID.desktop.tmp" "$CRAFT_PART_INSTALL/usr/share/applications/$ID.desktop"
