@@ -22,12 +22,12 @@ const PREVIEW: usize = 1800;
 
 enum Job {
     Open(Vec<PathBuf>),
-    Render { gen: u64, sessions: Vec<Arc<Session>>, current: usize, settings: Settings },
+    Render { seq: u64, sessions: Vec<Arc<Session>>, current: usize, settings: Settings },
 }
 
 enum Done {
     Opened(Vec<Arc<Session>>, Vec<String>),
-    Rendered { gen: u64, result: Result<Image, String>, ms: u128 },
+    Rendered { seq: u64, result: Result<Image, String>, ms: u128 },
 }
 
 struct Ui {
@@ -67,7 +67,7 @@ struct App {
     jobs: async_channel::Sender<Job>,
     sessions: RefCell<Vec<Arc<Session>>>,
     current: Cell<usize>,
-    gen: Cell<u64>,
+    seq: Cell<u64>,
     busy: Cell<bool>,
     /// films in the current brand, as shown in the Film row
     brand_films: RefCell<Vec<&'static str>>,
@@ -176,8 +176,8 @@ impl App {
         if sessions.is_empty() {
             return;
         }
-        let gen = self.gen.get() + 1;
-        self.gen.set(gen);
+        let seq = self.seq.get() + 1;
+        self.seq.set(seq);
         let mut settings = self.settings();
         if self.ui.before.is_active() {
             let raw = settings.raw;
@@ -185,7 +185,7 @@ impl App {
             settings.raw = raw;
         }
         self.set_busy(true);
-        let _ = self.jobs.send_blocking(Job::Render { gen, sessions, current: self.current.get(), settings });
+        let _ = self.jobs.send_blocking(Job::Render { seq, sessions, current: self.current.get(), settings });
     }
 
     fn set_busy(&self, b: bool) {
@@ -251,8 +251,8 @@ impl App {
         }
     }
 
-    fn rendered(&self, gen: u64, result: Result<Image, String>, ms: u128) {
-        if gen != self.gen.get() {
+    fn rendered(&self, seq: u64, result: Result<Image, String>, ms: u128) {
+        if seq != self.seq.get() {
             return; // a newer render is on its way
         }
         self.set_busy(false);
@@ -288,7 +288,7 @@ fn worker(jobs: async_channel::Receiver<Job>, done: async_channel::Sender<Done>)
             }
             let out = match job {
                 Job::Open(_) => run_open(job),
-                Job::Render { gen, sessions, current, settings } => {
+                Job::Render { seq, sessions, current, settings } => {
                     let t0 = Instant::now();
                     let result = if pipeline::is_multi(settings.effect) {
                         let refs: Vec<&Session> = sessions.iter().map(|s| s.as_ref()).collect();
@@ -296,7 +296,7 @@ fn worker(jobs: async_channel::Receiver<Job>, done: async_channel::Sender<Done>)
                     } else {
                         sessions[current.min(sessions.len() - 1)].render(&settings, PREVIEW)
                     };
-                    Done::Rendered { gen, result, ms: t0.elapsed().as_millis() }
+                    Done::Rendered { seq, result, ms: t0.elapsed().as_millis() }
                 }
             };
             if done.send_blocking(out).is_err() {
@@ -457,7 +457,7 @@ fn build(app: &adw::Application) {
         jobs: job_tx,
         sessions: RefCell::new(Vec::new()),
         current: Cell::new(0),
-        gen: Cell::new(0),
+        seq: Cell::new(0),
         busy: Cell::new(false),
         brand_films: RefCell::new(Vec::new()),
         updating: Cell::new(false),
@@ -565,7 +565,7 @@ fn build(app: &adw::Application) {
                 let Some(a) = a.upgrade() else { return };
                 match msg {
                     Done::Opened(s, errors) => a.opened(s, errors),
-                    Done::Rendered { gen, result, ms } => a.rendered(gen, result, ms),
+                    Done::Rendered { seq, result, ms } => a.rendered(seq, result, ms),
                 }
             }
         });
@@ -786,7 +786,7 @@ fn export_dialog(app: &Rc<App>) {
                 let mut last = String::new();
                 while let Ok(msg) = rx.recv().await {
                     match msg {
-                        Ok((f, text)) if f > 1.5 => {
+                        Ok((f, _)) if f > 1.5 => {
                             app.toast(&last);
                             dialog2.close();
                             break;
