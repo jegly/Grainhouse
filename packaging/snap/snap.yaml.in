@@ -14,13 +14,18 @@ confinement: strict
 architectures: [amd64]
 assumes: [snapd2.43]
 title: Grainhouse
-website: https://github.com/jegly/grainhouse
+links:
+  website:
+  - https://github.com/jegly/Grainhouse
+  source-code:
+  - https://github.com/jegly/Grainhouse
+  issues:
+  - https://github.com/jegly/Grainhouse/issues
 apps:
   grainhouse:
     command: usr/bin/grainhouse
     command-chain: [snap/command-chain/gpu-2604-wrapper, snap/command-chain/desktop-launch]
     common-id: io.github.jegly.Grainhouse
-    desktop: meta/gui/grainhouse.desktop
     plugs: [desktop, desktop-legacy, gsettings, home, removable-media, wayland, x11, opengl]
   cli:
     command: usr/bin/grainhouse --cli
