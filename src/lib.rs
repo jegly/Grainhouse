@@ -18,6 +18,7 @@ pub mod io;
 pub mod localtone;
 pub mod lut;
 pub mod pipeline;
+pub mod presets;
 pub mod upscale;
 pub mod util;
 pub mod whitebalance;

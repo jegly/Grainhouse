@@ -3,19 +3,20 @@
 
 use adw::prelude::*;
 use alpha_studio::{
-    ai, camera, develop, export,
+    adjust, ai, camera, creative, develop, export,
     export::ExportOptions,
     film, fx,
     geometry::{self, Geometry, Grab, Rect},
     img::Image,
-    lut,
+    frame, lut,
     pipeline::{self, Session, Settings},
+    presets,
     upscale, whitebalance,
 };
 use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -50,6 +51,28 @@ struct Ui {
     before: gtk::ToggleButton,
     export_button: gtk::Button,
     raw_group: adw::PreferencesGroup,
+    whites: Slider,
+    blacks: Slider,
+    vibrance: Slider,
+    saturation: Slider,
+    mix_colour: adw::ComboRow,
+    mix_hue: Slider,
+    mix_sat: Slider,
+    mix_lum: Slider,
+    grade_zone: adw::ComboRow,
+    grade_hue: Slider,
+    grade_amount: Slider,
+    balance: Slider,
+    clarity: Slider,
+    texture: Slider,
+    dehaze: Slider,
+    sharpen: Slider,
+    vignette: Slider,
+    frame: adw::ComboRow,
+    histogram: gtk::DrawingArea,
+    undo: gtk::Button,
+    redo: gtk::Button,
+    presets_box: gtk::Box,
     wb: adw::ComboRow,
     kelvin: Slider,
     tint: Slider,
@@ -110,6 +133,17 @@ struct App {
     frame_shown: Cell<bool>,
     /// the last "found nothing" note shown
     last_note: RefCell<Option<String>>,
+    /// colour mixer and grading values (the panel shows one colour / zone at a time)
+    mixer: RefCell<[[f32; 3]; 8]>,
+    grade: RefCell<[[f32; 2]; 3]>,
+    /// undo history and where we are in it
+    history: RefCell<Vec<Settings>>,
+    history_pos: Cell<usize>,
+    history_token: Rc<Cell<u64>>,
+    /// red, green, blue and brightness counts of the picture on screen
+    hist: RefCell<Option<[Vec<f32>; 4]>>,
+    show_hist: Cell<bool>,
+    me: RefCell<Weak<App>>,
 }
 
 fn combo(title: &str, items: &[&str], selected: usize) -> adw::ComboRow {
@@ -213,7 +247,30 @@ impl App {
         let mut s = Settings::default();
         s.raw.exposure = u.exposure.value() as f32;
         s.raw.contrast = (u.contrast.value() / 100.0) as f32;
-        s.raw.kelvin = if u.wb.selected() == 0 { None } else { Some(u.kelvin.value() as f32) };
+        let raw = self.sessions.borrow().get(self.current.get()).is_none_or(|x| x.is_raw());
+        s.raw.kelvin = if raw {
+            if u.wb.selected() == 0 { None } else { Some(u.kelvin.value() as f32) }
+        } else if (u.kelvin.value() - JPEG_KELVIN).abs() > 1.0 {
+            Some(u.kelvin.value() as f32)
+        } else {
+            None
+        };
+        s.raw.whites = (u.whites.value() / 100.0) as f32;
+        s.raw.blacks = (u.blacks.value() / 100.0) as f32;
+        let pc = |r: &Slider| (r.value() / 100.0) as f32;
+        s.adjust = adjust::Adjust {
+            vibrance: pc(&u.vibrance),
+            saturation: pc(&u.saturation),
+            mixer: *self.mixer.borrow(),
+            grade: *self.grade.borrow(),
+            balance: pc(&u.balance),
+            clarity: pc(&u.clarity),
+            texture: pc(&u.texture),
+            dehaze: pc(&u.dehaze),
+            sharpen: pc(&u.sharpen),
+            vignette: pc(&u.vignette),
+        };
+        s.frame = u.frame.selected() as usize;
         s.raw.tint = (u.tint.value() / 100.0) as f32;
         s.raw.shadows = (u.shadows.value() / 100.0) as f32;
         s.raw.highlights = (u.highlights.value() / 100.0) as f32;
@@ -248,22 +305,25 @@ impl App {
     fn update_rows(&self) {
         let u = &self.ui;
         let e = u.effect.selected() as usize;
-        let multi = pipeline::is_multi(e);
-        let subjects = e != pipeline::NONE && e != pipeline::FACE_MESH && e != pipeline::SKELETON && !multi;
+        let subjects = pipeline::needs_model(e) && e != pipeline::FACE_MESH && e != pipeline::SKELETON;
         u.target.set_visible(subjects);
         u.model.set_visible(subjects || e == pipeline::SKELETON);
-        u.look.set_visible(e == pipeline::GHOSTS);
+        u.look.set_visible(!pipeline::looks(e).is_empty());
         u.face.set_visible(e == pipeline::WIREFRAME || e == pipeline::FACE_MESH);
-        u.amount.set_visible(e != pipeline::NONE);
+        u.amount.set_visible(e != pipeline::NONE && e != pipeline::EXTRA_FIRST + fx::extra::MIRROR);
         u.amount.set_title(match e {
             pipeline::GHOSTS => "Opacity",
             pipeline::WIREFRAME | pipeline::CONTOURS | pipeline::POINTS | pipeline::SKELETON | pipeline::FACE_MESH => "Dim behind",
             pipeline::TRAILS => "Paler trails",
+            e if e >= pipeline::EXTRA_FIRST => "Strength",
             _ => "Amount",
         });
         let lit = matches!(e, pipeline::GHOSTS | pipeline::WIREFRAME | pipeline::CONTOURS | pipeline::FACE_MESH | pipeline::POINTS | pipeline::SKELETON | pipeline::TRAILS)
             || e == pipeline::SCENE_FIRST + fx::scene::RIM
-            || e == pipeline::SCENE_FIRST + fx::scene::COMIC;
+            || e == pipeline::SCENE_FIRST + fx::scene::COMIC
+            || e == pipeline::EXTRA_FIRST + fx::extra::NEON;
+        let raw = self.sessions.borrow().get(self.current.get()).is_some_and(|x| x.is_raw());
+        u.wb.set_visible(raw);
         u.colour.set_visible(lit);
         u.glow.set_visible(matches!(e, pipeline::GHOSTS | pipeline::WIREFRAME | pipeline::CONTOURS | pipeline::FACE_MESH | pipeline::SKELETON));
         let diffusing = u.diffusion.selected() != 0;
@@ -280,6 +340,8 @@ impl App {
         let brands = film::brands();
         let (ids, names): (Vec<String>, Vec<String>) = if brand == 0 {
             (Vec::new(), Vec::new())
+        } else if brand == brands.len() + 1 {
+            creative::NAMES.iter().enumerate().map(|(i, n)| (format!("gen:{i}"), n.to_string())).unzip()
         } else if brand > brands.len() {
             lut::list().into_iter().map(|(n, p)| (format!("lut:{}", p.display()), n)).unzip()
         } else {
@@ -289,13 +351,13 @@ impl App {
                 .map(|f| (f.file.to_string(), if f.error < 0.0 { format!("{}  \u{25c6}", f.name) } else { f.name.to_string() }))
                 .unzip()
         };
-        let empty_luts = brand > brands.len() && ids.is_empty();
-        self.ui.film.set_subtitle(if empty_luts { "Press Add LUT above to bring in .cube files" } else { "" });
+        let empty_luts = brand > brands.len() + 1 && ids.is_empty();
+        self.ui.film.set_subtitle(if empty_luts { "Use Add above to bring in .cube files or a folder of them" } else { "" });
         let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-        self.updating.set(true);
+        let was = self.updating.replace(true);
         self.ui.film.set_model(Some(&gtk::StringList::new(&refs)));
         self.ui.film.set_selected(0);
-        self.updating.set(false);
+        self.updating.set(was);
         *self.brand_films.borrow_mut() = ids;
     }
 
@@ -303,13 +365,22 @@ impl App {
     fn sync_wb(&self) {
         let sessions = self.sessions.borrow();
         let Some(s) = sessions.get(self.current.get()) else { return };
+        if !s.is_raw() {
+            self.ui.kelvin.set_subtitle("Kelvin. 6500 leaves the photo as it is");
+            if self.ui.wb.selected() == 0 {
+                let was = self.updating.replace(true);
+                self.ui.kelvin.set_value(JPEG_KELVIN);
+                self.updating.set(was);
+            }
+            return;
+        }
         let shot = s.as_shot_kelvin();
         self.ui.kelvin.set_subtitle(&shot.map(|k| format!("Kelvin. As shot: {:.0} K", (k / 50.0).round() * 50.0)).unwrap_or("Kelvin".into()));
         if self.ui.wb.selected() == 0 {
             if let Some(k) = shot {
-                self.updating.set(true);
+                let was = self.updating.replace(true);
                 self.ui.kelvin.set_value(((k / 50.0).round() * 50.0) as f64);
-                self.updating.set(false);
+                self.updating.set(was);
             }
         }
     }
@@ -318,6 +389,7 @@ impl App {
         if self.updating.get() {
             return;
         }
+        self.schedule_history();
         self.update_rows();
         let sessions = self.sessions.borrow().clone();
         if sessions.is_empty() {
@@ -340,7 +412,9 @@ impl App {
         }
         self.frame_requested.set(cropping);
         let shown = &sessions[self.current.get().min(sessions.len() - 1)];
-        let (title, sub) = if pipeline::is_multi(settings.effect) {
+        let (title, sub) = if settings.effect == pipeline::DOUBLE && shown.needs_ai(&settings) {
+            ("Double exposure: finding people".to_string(), "In the first photo; the second fills them".to_string())
+        } else if pipeline::is_multi(settings.effect) {
             (format!("Combining {} photos", sessions.len()), String::new())
         } else if shown.needs_ai(&settings) {
             (ai_message(&settings), "The AI runs once, then changes are quick".to_string())
@@ -402,13 +476,15 @@ impl App {
         self.current.set(0);
         self.ui.empty.set_visible(false);
         self.ui.export_button.set_sensitive(true);
-        let raw = self.sessions.borrow()[0].is_raw();
-        self.ui.raw_group.set_visible(raw);
+        self.ui.raw_group.set_visible(true);
         self.sync_wb();
         self.ui.crop_group.set_visible(true);
         self.reset_crop();
         self.ui.crop_button.set_sensitive(true);
         self.rebuild_strip();
+        *self.history.borrow_mut() = vec![self.settings()];
+        self.history_pos.set(0);
+        self.update_history_buttons();
         self.request_render();
     }
 
@@ -427,8 +503,6 @@ impl App {
             b.connect_clicked(move |_| {
                 if let Some(app) = app.upgrade() {
                     app.current.set(i);
-                    let raw = app.sessions.borrow()[i].is_raw();
-                    app.ui.raw_group.set_visible(raw);
                     app.sync_wb();
                     app.rebuild_strip();
                     app.request_render();
@@ -473,11 +547,11 @@ impl App {
     }
 
     fn reset_crop(&self) {
-        self.updating.set(true);
+        let was = self.updating.replace(true);
         self.ui.aspect.set_selected(0);
         self.ui.straighten.set_value(0.0);
         self.ui.crop_button.set_active(false);
-        self.updating.set(false);
+        self.updating.set(was);
         *self.geometry.borrow_mut() = Geometry::default();
         self.portrait.set(false);
     }
@@ -575,6 +649,269 @@ impl App {
         let _ = cr.stroke();
     }
 
+    /// Fills the Look row with the effect's choices, keeping `keep` if it fits.
+    fn fill_looks(&self, keep: Option<usize>) {
+        let e = self.ui.effect.selected() as usize;
+        let names = pipeline::looks(e);
+        let was = self.updating.replace(true);
+        self.ui.look.set_model(Some(&gtk::StringList::new(names)));
+        let default = if e == pipeline::GHOSTS { 1 } else { 0 };
+        let pick = keep.filter(|&k| k < names.len()).unwrap_or(default.min(names.len().saturating_sub(1)));
+        self.ui.look.set_selected(pick as u32);
+        self.updating.set(was);
+    }
+
+    /// Shows the mixer and grading sliders for the chosen colour and zone.
+    fn show_mixer(&self) {
+        let u = &self.ui;
+        let was = self.updating.replace(true);
+        let m = self.mixer.borrow()[(u.mix_colour.selected() as usize).min(7)];
+        u.mix_hue.set_value((m[0] * 100.0) as f64);
+        u.mix_sat.set_value((m[1] * 100.0) as f64);
+        u.mix_lum.set_value((m[2] * 100.0) as f64);
+        let g = self.grade.borrow()[(u.grade_zone.selected() as usize).min(2)];
+        u.grade_hue.set_value(g[0] as f64);
+        u.grade_amount.set_value((g[1] * 100.0) as f64);
+        self.updating.set(was);
+    }
+
+    /// Puts settings into the panel (for presets, undo and reset), then renders.
+    fn apply_settings(&self, s: &Settings) {
+        let u = &self.ui;
+        let was = self.updating.replace(true);
+        u.exposure.set_value(s.raw.exposure as f64);
+        u.contrast.set_value((s.raw.contrast * 100.0) as f64);
+        let raw = self.sessions.borrow().get(self.current.get()).is_some_and(|x| x.is_raw());
+        match s.raw.kelvin {
+            None => {
+                u.wb.set_selected(0);
+            }
+            Some(k) => {
+                let preset = whitebalance::PRESET_KELVIN.iter().position(|p| *p > 0.0 && (*p - k).abs() < 1.0);
+                u.wb.set_selected(if raw { preset.unwrap_or(whitebalance::CUSTOM) as u32 } else { whitebalance::CUSTOM as u32 });
+                u.kelvin.set_value(k as f64);
+            }
+        }
+        let pc = |r: &Slider, v: f32| r.set_value((v * 100.0) as f64);
+        pc(&u.tint, s.raw.tint);
+        pc(&u.shadows, s.raw.shadows);
+        pc(&u.highlights, s.raw.highlights);
+        pc(&u.whites, s.raw.whites);
+        pc(&u.blacks, s.raw.blacks);
+        u.camera.set_selected(s.camera as u32);
+        pc(&u.cam_strength, s.camera_strength);
+        u.stamp.set_active(s.date_stamp);
+        // film: find its brand, fill the list, pick it
+        let brands = film::brands();
+        let brand = match s.film.as_deref() {
+            None => 0,
+            Some(f) if f.starts_with("gen:") => brands.len() + 1,
+            Some(f) if f.starts_with("lut:") => brands.len() + 2,
+            Some(f) => film::films().into_iter().find(|x| x.file == f).and_then(|x| brands.iter().position(|b| *b == x.brand)).map_or(0, |i| i + 1),
+        };
+        u.brand.set_selected(brand as u32);
+        self.fill_films();
+        if let Some(f) = &s.film {
+            let pos = self.brand_films.borrow().iter().position(|x| x == f);
+            if let Some(pos) = pos {
+                u.film.set_selected(pos as u32);
+            }
+        }
+        pc(&u.strength, s.strength);
+        let a = &s.adjust;
+        pc(&u.vibrance, a.vibrance);
+        pc(&u.saturation, a.saturation);
+        *self.mixer.borrow_mut() = a.mixer;
+        *self.grade.borrow_mut() = a.grade;
+        pc(&u.balance, a.balance);
+        pc(&u.clarity, a.clarity);
+        pc(&u.texture, a.texture);
+        pc(&u.dehaze, a.dehaze);
+        pc(&u.sharpen, a.sharpen);
+        pc(&u.vignette, a.vignette);
+        u.effect.set_selected(s.effect as u32);
+        self.fill_looks(Some(s.look));
+        u.target.set_selected(s.target as u32);
+        u.model.set_selected(s.model as u32);
+        u.face.set_selected(s.face_style as u32);
+        pc(&u.amount, s.amount);
+        u.colour.set_selected(s.colour as u32);
+        u.glow.set_selected(s.glow as u32);
+        u.diffusion.set_selected(s.diffusion as u32);
+        pc(&u.diff_strength, s.diffusion_opt.strength);
+        pc(&u.diff_size, s.diffusion_opt.size);
+        pc(&u.bloom, s.diffusion_opt.bloom);
+        pc(&u.warmth, s.diffusion_opt.warmth);
+        u.halation.set_active(s.develop.halation);
+        u.grain.set_selected(s.develop.grain as u32);
+        u.leak.set_active(s.develop.light_leak);
+        u.mono.set_active(s.develop.monochrome);
+        u.frame.set_selected(s.frame as u32);
+        *self.geometry.borrow_mut() = s.geometry;
+        u.straighten.set_value(s.geometry.angle as f64);
+        self.updating.set(was);
+        self.show_mixer();
+        if s.raw.kelvin.is_none() {
+            self.sync_wb();
+        }
+        self.request_render();
+    }
+
+    /// Remembers the settings for undo once they've stopped changing for a moment.
+    fn schedule_history(&self) {
+        let token = self.history_token.get() + 1;
+        self.history_token.set(token);
+        let (current, me) = (self.history_token.clone(), self.me.borrow().clone());
+        glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+            if current.get() != token {
+                return;
+            }
+            let Some(a) = me.upgrade() else { return };
+            if a.sessions.borrow().is_empty() {
+                return;
+            }
+            let s = a.settings();
+            let pos = a.history_pos.get();
+            let mut h = a.history.borrow_mut();
+            if h.get(pos) == Some(&s) {
+                return;
+            }
+            h.truncate(pos + 1);
+            h.push(s);
+            if h.len() > 200 {
+                h.remove(0);
+            }
+            a.history_pos.set(h.len() - 1);
+            drop(h);
+            a.update_history_buttons();
+        });
+    }
+
+    fn update_history_buttons(&self) {
+        let pos = self.history_pos.get();
+        self.ui.undo.set_sensitive(pos > 0);
+        self.ui.redo.set_sensitive(pos + 1 < self.history.borrow().len());
+    }
+
+    fn step_history(&self, back: bool) {
+        let pos = self.history_pos.get();
+        let len = self.history.borrow().len();
+        let to = if back { pos.checked_sub(1) } else { (pos + 1 < len).then_some(pos + 1) };
+        let Some(to) = to else { return };
+        self.history_pos.set(to);
+        let s = self.history.borrow()[to].clone();
+        self.update_history_buttons();
+        self.apply_settings(&s);
+    }
+
+    fn draw_histogram(&self, cr: &gtk::cairo::Context, w: f64, h: f64) {
+        if !self.show_hist.get() || self.sessions.borrow().is_empty() {
+            return;
+        }
+        let Some(hist) = &*self.hist.borrow() else { return };
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.5);
+        let r = 8.0;
+        cr.new_sub_path();
+        cr.arc(w - r, r, r, -std::f64::consts::FRAC_PI_2, 0.0);
+        cr.arc(w - r, h - r, r, 0.0, std::f64::consts::FRAC_PI_2);
+        cr.arc(r, h - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+        cr.arc(r, r, r, std::f64::consts::PI, 1.5 * std::f64::consts::PI);
+        cr.close_path();
+        let _ = cr.fill();
+        let (pad, gw, gh) = (8.0, w - 16.0, h - 16.0);
+        let colours = [(1.0, 0.3, 0.3), (0.3, 1.0, 0.4), (0.35, 0.55, 1.0), (0.9, 0.9, 0.9)];
+        for (c, (r, g, b)) in hist.iter().zip(colours) {
+            cr.set_source_rgba(r, g, b, 0.4);
+            cr.move_to(pad, pad + gh);
+            for (i, v) in c.iter().enumerate() {
+                cr.line_to(pad + gw * i as f64 / 255.0, pad + gh * (1.0 - *v as f64));
+            }
+            cr.line_to(pad + gw, pad + gh);
+            cr.close_path();
+            let _ = cr.fill();
+        }
+    }
+
+    /// Fills the presets popover: built-in looks, the user's own (with delete), and saving the current look.
+    fn fill_presets(&self) {
+        let b = &self.ui.presets_box;
+        while let Some(c) = b.first_child() {
+            b.remove(&c);
+        }
+        let me = self.me.borrow().clone();
+        let heading = |t: &str| gtk::Label::builder().label(t).halign(gtk::Align::Start).css_classes(["heading"]).margin_top(6).margin_bottom(2).build();
+        b.append(&heading("Built in"));
+        let flow = gtk::FlowBox::builder().max_children_per_line(2).min_children_per_line(2).selection_mode(gtk::SelectionMode::None).column_spacing(4).row_spacing(4).build();
+        for (name, preset) in presets::builtin() {
+            let button = gtk::Button::builder().label(name).css_classes(["flat"]).build();
+            let me = me.clone();
+            button.connect_clicked(move |_| {
+                if let Some(a) = me.upgrade() {
+                    let s = presets::apply(&a.settings(), &preset);
+                    a.apply_settings(&s);
+                    a.toast(&format!("Preset: {name}"));
+                }
+            });
+            flow.append(&button);
+        }
+        b.append(&flow);
+        let user = presets::user();
+        if !user.is_empty() {
+            b.append(&heading("Yours"));
+            for (name, path) in user {
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+                let apply = gtk::Button::builder().label(&name).css_classes(["flat"]).hexpand(true).build();
+                let del = gtk::Button::builder().icon_name("user-trash-symbolic").tooltip_text("Delete this preset").css_classes(["flat"]).build();
+                let (me2, p2, n2) = (me.clone(), path.clone(), name.clone());
+                apply.connect_clicked(move |_| {
+                    let Some(a) = me2.upgrade() else { return };
+                    match presets::load(&p2) {
+                        Ok(p) => {
+                            let s = presets::apply(&a.settings(), &p);
+                            a.apply_settings(&s);
+                            a.toast(&format!("Preset: {n2}"));
+                        }
+                        Err(e) => a.toast(&e),
+                    }
+                });
+                let me3 = me.clone();
+                del.connect_clicked(move |_| {
+                    let _ = std::fs::remove_file(&path);
+                    if let Some(a) = me3.upgrade() {
+                        a.fill_presets();
+                    }
+                });
+                row.append(&apply);
+                row.append(&del);
+                b.append(&row);
+            }
+        }
+        b.append(&heading("Save the current look"));
+        let save_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let entry = gtk::Entry::builder().placeholder_text("Preset name").hexpand(true).build();
+        let save = gtk::Button::builder().label("Save").css_classes(["suggested-action"]).build();
+        let do_save = {
+            let (me, entry) = (me.clone(), entry.clone());
+            move || {
+                let Some(a) = me.upgrade() else { return };
+                match presets::save(&entry.text(), &a.settings()) {
+                    Ok(_) => {
+                        a.toast(&format!("Saved preset {}", entry.text()));
+                        a.fill_presets();
+                    }
+                    Err(e) => a.toast(&e),
+                }
+            }
+        };
+        let f = Rc::new(do_save);
+        let f2 = f.clone();
+        save.connect_clicked(move |_| f());
+        entry.connect_activate(move |_| f2());
+        save_row.append(&entry);
+        save_row.append(&save);
+        b.append(&save_row);
+    }
+
     fn rendered(&self, seq: u64, result: Result<Image, String>, ms: u128, note: Option<String>) {
         if seq != self.seq.get() {
             return; // a newer render is on its way
@@ -590,6 +927,8 @@ impl App {
         match result {
             Ok(img) => {
                 self.ui.picture.set_paintable(Some(&texture(&img)));
+                *self.hist.borrow_mut() = Some(histogram(&img));
+                self.ui.histogram.queue_draw();
                 self.frame_shown.set(self.frame_requested.get());
                 self.ui.crop_area.queue_draw();
                 let sessions = self.sessions.borrow();
@@ -603,6 +942,25 @@ impl App {
             Err(e) => self.toast(&e),
         }
     }
+}
+
+/// Temperature that leaves a JPEG as it is.
+const JPEG_KELVIN: f64 = 6500.0;
+
+/// Red, green, blue and brightness histograms (0..1, scaled to the busiest level), from every few pixels.
+fn histogram(img: &Image) -> [Vec<f32>; 4] {
+    let mut c = [vec![0u32; 256], vec![0u32; 256], vec![0u32; 256], vec![0u32; 256]];
+    let step = (img.px.len() / 200_000).max(1);
+    for p in img.px.iter().step_by(step) {
+        let (r, g, b) = ((p >> 16) & 255, (p >> 8) & 255, p & 255);
+        c[0][r as usize] += 1;
+        c[1][g as usize] += 1;
+        c[2][b as usize] += 1;
+        c[3][((r * 77 + g * 150 + b * 29) >> 8) as usize] += 1;
+    }
+    // ignore the very ends when scaling, so clipped black or white doesn't flatten the rest
+    let max = c.iter().map(|h| h[1..255].iter().copied().max().unwrap_or(1)).max().unwrap_or(1).max(1) as f32;
+    c.map(|h| h.iter().map(|&v| (v as f32 / max).min(1.0).sqrt()).collect())
 }
 
 /// What the AI is looking for, for the status box.
@@ -665,6 +1023,7 @@ fn run_open(job: Job) -> Done {
 }
 
 fn build(app: &adw::Application) {
+    let application = app.clone();
     let window = adw::ApplicationWindow::builder().application(app).title("Alpha Studio").default_width(1400).default_height(900).build();
     let toasts = adw::ToastOverlay::new();
 
@@ -673,7 +1032,7 @@ fn build(app: &adw::Application) {
     let empty = adw::StatusPage::builder()
         .icon_name("image-x-generic-symbolic")
         .title("Drop photos here")
-        .description("Sony ARW and other RAW files, JPEG, PNG or TIFF.\nDrop several for Crowd remover or Trails.")
+        .description("Sony ARW and other RAW files, JPEG, PNG or TIFF.\nDrop several for Crowd remover, Trails or Double exposure.")
         .build();
     let status = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -699,6 +1058,8 @@ fn build(app: &adw::Application) {
     overlay.set_child(Some(&picture));
     let crop_area = gtk::DrawingArea::builder().hexpand(true).vexpand(true).can_target(false).build();
     overlay.add_overlay(&crop_area);
+    let histogram = gtk::DrawingArea::builder().width_request(256).height_request(110).halign(gtk::Align::End).valign(gtk::Align::Start).margin_top(12).margin_end(12).can_target(false).build();
+    overlay.add_overlay(&histogram);
     overlay.add_overlay(&empty);
     overlay.add_overlay(&status);
     overlay.add_overlay(&info);
@@ -713,23 +1074,72 @@ fn build(app: &adw::Application) {
     left.append(&strip_scroll);
 
     // the settings
-    let raw_group = adw::PreferencesGroup::builder().title("RAW").visible(false).build();
+    let raw_group = adw::PreferencesGroup::builder().title("Light").visible(false).build();
     let wb = combo("White balance", &whitebalance::PRESETS, 0);
     let kelvin = slider("Temperature", 2000.0, 12000.0, 50.0, 5500.0, 0);
     kelvin.set_subtitle("Kelvin");
     let tint = slider("Tint", -100.0, 100.0, 1.0, 0.0, 0);
     tint.set_subtitle("Green to magenta");
     let exposure = slider("Exposure", -3.0, 3.0, 0.05, 0.0, 2);
-    let contrast = slider("Contrast", 0.0, 100.0, 1.0, 100.0, 0);
-    contrast.set_subtitle("0 is flat, 100 is like the camera's JPEG");
+    let contrast = slider("Contrast", 0.0, 200.0, 1.0, 100.0, 0);
+    contrast.set_subtitle("100 is as shot (for RAW, the camera's own look)");
     let shadows = slider("Shadows", -100.0, 100.0, 1.0, 0.0, 0);
     shadows.set_subtitle("Lift or deepen the dark areas (D-Range)");
     let highlights = slider("Highlights", -100.0, 100.0, 1.0, 0.0, 0);
     highlights.set_subtitle("Below 0 brings back bright detail");
+    let whites = slider("Whites", -100.0, 100.0, 1.0, 0.0, 0);
+    let blacks = slider("Blacks", -100.0, 100.0, 1.0, 0.0, 0);
+    blacks.set_subtitle("Below 0 deepens, above 0 fades");
     raw_group.add(&wb);
-    for r in [&kelvin, &tint, &exposure, &contrast, &shadows, &highlights] {
+    for r in [&kelvin, &tint, &exposure, &contrast, &shadows, &highlights, &whites, &blacks] {
         raw_group.add(&r.row);
     }
+
+    let colour_group = adw::PreferencesGroup::builder().title("Colour").build();
+    let vibrance = slider("Vibrance", -100.0, 100.0, 1.0, 0.0, 0);
+    vibrance.set_subtitle("Muted colours more, skin less");
+    let saturation = slider("Saturation", -100.0, 100.0, 1.0, 0.0, 0);
+    let mixer_row = adw::ExpanderRow::builder().title("Colour mixer").subtitle("Hue, saturation and brightness of each colour").build();
+    let mix_colour = combo("Colour", &adjust::MIXER_NAMES, 0);
+    let mix_hue = slider("Hue", -100.0, 100.0, 1.0, 0.0, 0);
+    let mix_sat = slider("Saturation", -100.0, 100.0, 1.0, 0.0, 0);
+    let mix_lum = slider("Luminance", -100.0, 100.0, 1.0, 0.0, 0);
+    mixer_row.add_row(&mix_colour);
+    for r in [&mix_hue, &mix_sat, &mix_lum] {
+        mixer_row.add_row(&r.row);
+    }
+    let grade_row = adw::ExpanderRow::builder().title("Colour grading").subtitle("Tint the shadows, midtones and highlights").build();
+    let grade_zone = combo("Zone", &adjust::GRADE_NAMES, 0);
+    let grade_hue = slider("Hue", 0.0, 360.0, 1.0, 0.0, 0);
+    let grade_amount = slider("Amount", 0.0, 100.0, 1.0, 0.0, 0);
+    let balance = slider("Balance", -100.0, 100.0, 1.0, 0.0, 0);
+    balance.set_subtitle("Towards the shadows or the highlights");
+    grade_row.add_row(&grade_zone);
+    for r in [&grade_hue, &grade_amount, &balance] {
+        grade_row.add_row(&r.row);
+    }
+    colour_group.add(&vibrance.row);
+    colour_group.add(&saturation.row);
+    colour_group.add(&mixer_row);
+    colour_group.add(&grade_row);
+
+    let detail_group = adw::PreferencesGroup::builder().title("Detail").build();
+    let clarity = slider("Clarity", -100.0, 100.0, 1.0, 0.0, 0);
+    clarity.set_subtitle("Midtone punch");
+    let texture_s = slider("Texture", -100.0, 100.0, 1.0, 0.0, 0);
+    texture_s.set_subtitle("Fine detail; below 0 smooths skin");
+    let dehaze = slider("Dehaze", -100.0, 100.0, 1.0, 0.0, 0);
+    let sharpen = slider("Sharpen", 0.0, 100.0, 1.0, 0.0, 0);
+    let vignette = slider("Vignette", -100.0, 100.0, 1.0, 0.0, 0);
+    vignette.set_subtitle("Below 0 darkens the corners");
+    for r in [&clarity, &texture_s, &dehaze, &sharpen, &vignette] {
+        detail_group.add(&r.row);
+    }
+
+    let frame_group = adw::PreferencesGroup::builder().title("Frame").build();
+    let frame_row = combo("Frame", &frame::NAMES, 0);
+    frame_row.set_subtitle("Polaroid, Instax and 6x6 crop to their shape");
+    frame_group.add(&frame_row);
 
     let camera_group = adw::PreferencesGroup::builder().title("Camera").description("Looks in the spirit of other cameras' colour and character").build();
     let camera_row = combo("Camera", &camera::names(), 0);
@@ -742,12 +1152,17 @@ fn build(app: &adw::Application) {
 
     let film_group = adw::PreferencesGroup::builder()
         .title("Film")
-        .description("Film Sim's looks. \u{25c6} = designed for the camera. My LUTs = your .cube files")
+        .description("Film Sim's looks (\u{25c6} = designed for the camera), Creative looks, and your .cube files under My LUTs")
         .build();
-    let add_lut = gtk::Button::builder().label("Add LUT\u{2026}").css_classes(["flat"]).valign(gtk::Align::Center).build();
-    film_group.set_header_suffix(Some(&add_lut));
+    let lut_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    let add_lut = gtk::Button::builder().label("Add LUTs\u{2026}").tooltip_text("Add .cube files to My LUTs").css_classes(["flat"]).valign(gtk::Align::Center).build();
+    let add_folder = gtk::Button::builder().icon_name("folder-symbolic").tooltip_text("Add every .cube file in a folder").css_classes(["flat"]).valign(gtk::Align::Center).build();
+    lut_buttons.append(&add_lut);
+    lut_buttons.append(&add_folder);
+    film_group.set_header_suffix(Some(&lut_buttons));
     let mut brands = vec!["None"];
     brands.extend(film::brands());
+    brands.push("Creative");
     brands.push("My LUTs");
     let lut_brand = brands.len() as u32 - 1;
     let brand = combo("Brand", &brands, 0);
@@ -761,6 +1176,7 @@ fn build(app: &adw::Application) {
 
     let fx_group = adw::PreferencesGroup::builder().title("Effect").build();
     let effect = combo("Effect", &pipeline::EFFECTS, 0);
+    effect.set_enable_search(true);
     let target = combo("Target", &ai::TARGET_NAMES, 0);
     let model = combo("AI model", &ai::MODEL_NAMES, 1);
     let look = combo("Look", &fx::ghost::LOOKS, 1);
@@ -822,7 +1238,7 @@ fn build(app: &adw::Application) {
     dev_group.add(&mono);
 
     let page = adw::PreferencesPage::new();
-    for g in [&raw_group, &crop_group, &camera_group, &film_group, &fx_group, &lens_group, &dev_group] {
+    for g in [&raw_group, &crop_group, &camera_group, &film_group, &colour_group, &detail_group, &fx_group, &lens_group, &dev_group, &frame_group] {
         page.add(g);
     }
     page.set_width_request(390);
@@ -835,11 +1251,27 @@ fn build(app: &adw::Application) {
     let open_button = gtk::Button::builder().icon_name("document-open-symbolic").tooltip_text("Open photos").build();
     let before = gtk::ToggleButton::builder().label("Before").tooltip_text("Show the photo without the edit").build();
     let export_button = gtk::Button::builder().label("Export\u{2026}").css_classes(["suggested-action"]).sensitive(false).build();
+    let undo = gtk::Button::builder().icon_name("edit-undo-symbolic").tooltip_text("Undo (Ctrl+Z)").sensitive(false).build();
+    let redo = gtk::Button::builder().icon_name("edit-redo-symbolic").tooltip_text("Redo (Ctrl+Shift+Z)").sensitive(false).build();
     header.pack_start(&open_button);
+    header.pack_start(&undo);
+    header.pack_start(&redo);
     header.pack_start(&before);
     let crop_button = gtk::ToggleButton::builder().label("Crop").tooltip_text("Crop, straighten and rotate (Enter when done)").sensitive(false).build();
     header.pack_start(&crop_button);
     header.pack_end(&export_button);
+    let menu = gio::Menu::new();
+    menu.append(Some("Show histogram"), Some("win.histogram"));
+    menu.append(Some("Reset all edits"), Some("win.reset"));
+    menu.append(Some("Keyboard shortcuts"), Some("win.shortcuts"));
+    menu.append(Some("About Alpha Studio"), Some("win.about"));
+    let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).tooltip_text("Menu").build();
+    header.pack_end(&menu_button);
+    let presets_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).margin_start(8).margin_end(8).margin_top(8).margin_bottom(8).build();
+    let presets_scroll = gtk::ScrolledWindow::builder().child(&presets_box).hscrollbar_policy(gtk::PolicyType::Never).min_content_height(480).min_content_width(380).build();
+    let presets_pop = gtk::Popover::builder().child(&presets_scroll).build();
+    let presets_button = gtk::MenuButton::builder().label("Presets").popover(&presets_pop).tooltip_text("Whole looks in one click, and your own saved looks").build();
+    header.pack_end(&presets_button);
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
     view.set_content(Some(&toasts));
@@ -864,6 +1296,28 @@ fn build(app: &adw::Application) {
             before: before.clone(),
             export_button: export_button.clone(),
             raw_group,
+            whites,
+            blacks,
+            vibrance,
+            saturation,
+            mix_colour,
+            mix_hue,
+            mix_sat,
+            mix_lum,
+            grade_zone,
+            grade_hue,
+            grade_amount,
+            balance,
+            clarity,
+            texture: texture_s,
+            dehaze,
+            sharpen,
+            vignette,
+            frame: frame_row,
+            histogram: histogram.clone(),
+            undo: undo.clone(),
+            redo: redo.clone(),
+            presets_box,
             wb,
             kelvin,
             tint,
@@ -914,12 +1368,21 @@ fn build(app: &adw::Application) {
         frame_requested: Cell::new(false),
         frame_shown: Cell::new(false),
         last_note: RefCell::new(None),
+        mixer: RefCell::new([[0.0; 3]; 8]),
+        grade: RefCell::new([[0.0; 2]; 3]),
+        history: RefCell::new(Vec::new()),
+        history_pos: Cell::new(0),
+        history_token: Rc::new(Cell::new(0)),
+        hist: RefCell::new(None),
+        show_hist: Cell::new(true),
+        me: RefCell::new(Weak::new()),
     });
+    *app.me.borrow_mut() = Rc::downgrade(&app);
     app.update_rows();
 
     // any setting change re-renders
     let u = &app.ui;
-    for row in [&u.camera, &u.film, &u.effect, &u.target, &u.model, &u.look, &u.face, &u.colour, &u.glow, &u.diffusion, &u.grain] {
+    for row in [&u.camera, &u.film, &u.target, &u.model, &u.look, &u.face, &u.colour, &u.glow, &u.diffusion, &u.grain, &u.frame] {
         let a = Rc::downgrade(&app);
         row.connect_selected_notify(move |_| {
             if let Some(a) = a.upgrade() {
@@ -927,7 +1390,10 @@ fn build(app: &adw::Application) {
             }
         });
     }
-    for row in [&u.exposure, &u.contrast, &u.tint, &u.shadows, &u.highlights, &u.cam_strength, &u.strength, &u.amount, &u.diff_strength, &u.diff_size, &u.bloom, &u.warmth] {
+    for row in [
+        &u.exposure, &u.contrast, &u.tint, &u.shadows, &u.highlights, &u.whites, &u.blacks, &u.cam_strength, &u.strength, &u.amount, &u.diff_strength,
+        &u.diff_size, &u.bloom, &u.warmth, &u.vibrance, &u.saturation, &u.balance, &u.clarity, &u.texture, &u.dehaze, &u.sharpen, &u.vignette,
+    ] {
         let a = Rc::downgrade(&app);
         row.connect_value_notify(move |_| {
             if let Some(a) = a.upgrade() {
@@ -959,6 +1425,178 @@ fn build(app: &adw::Application) {
                 a.request_render();
             }
         });
+    }
+
+    {
+        let a = Rc::downgrade(&app);
+        u.effect.connect_selected_notify(move |_| {
+            if let Some(a) = a.upgrade() {
+                if a.updating.get() {
+                    return;
+                }
+                a.fill_looks(None);
+                a.request_render();
+            }
+        });
+    }
+    // the colour mixer and grading show one colour / zone at a time
+    for row in [&u.mix_colour, &u.grade_zone] {
+        let a = Rc::downgrade(&app);
+        row.connect_selected_notify(move |_| {
+            if let Some(a) = a.upgrade() {
+                a.show_mixer();
+            }
+        });
+    }
+    for (i, row) in [&u.mix_hue, &u.mix_sat, &u.mix_lum].into_iter().enumerate() {
+        let a = Rc::downgrade(&app);
+        row.connect_value_notify(move |r| {
+            let Some(a) = a.upgrade() else { return };
+            if a.updating.get() {
+                return;
+            }
+            let c = (a.ui.mix_colour.selected() as usize).min(7);
+            a.mixer.borrow_mut()[c][i] = (r.value() / 100.0) as f32;
+            a.request_render();
+        });
+    }
+    for (i, row) in [&u.grade_hue, &u.grade_amount].into_iter().enumerate() {
+        let a = Rc::downgrade(&app);
+        row.connect_value_notify(move |r| {
+            let Some(a) = a.upgrade() else { return };
+            if a.updating.get() {
+                return;
+            }
+            let z = (a.ui.grade_zone.selected() as usize).min(2);
+            a.grade.borrow_mut()[z][i] = if i == 0 { r.value() as f32 } else { (r.value() / 100.0) as f32 };
+            a.request_render();
+        });
+    }
+    {
+        let a = Rc::downgrade(&app);
+        histogram.set_draw_func(move |_, cr, w, h| {
+            if let Some(a) = a.upgrade() {
+                a.draw_histogram(cr, w as f64, h as f64);
+            }
+        });
+    }
+    for (button, back) in [(&undo, true), (&redo, false)] {
+        let a = Rc::downgrade(&app);
+        button.connect_clicked(move |_| {
+            if let Some(a) = a.upgrade() {
+                a.step_history(back);
+            }
+        });
+    }
+    {
+        let a = Rc::downgrade(&app);
+        presets_pop.connect_show(move |_| {
+            if let Some(a) = a.upgrade() {
+                a.fill_presets();
+            }
+        });
+    }
+    {
+        let a = Rc::downgrade(&app);
+        add_folder.connect_clicked(move |_| {
+            let Some(a) = a.upgrade() else { return };
+            let dialog = gtk::FileDialog::builder().title("Add a folder of LUTs").build();
+            let win = a.ui.window.clone();
+            glib::spawn_future_local(async move {
+                let Ok(folder) = dialog.select_folder_future(Some(&win)).await else { return };
+                let Some(dir) = folder.path() else { return };
+                let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("cube")))
+                    .collect();
+                files.sort();
+                let (mut ok, mut bad) = (0, 0);
+                for f in &files {
+                    if lut::add(f).is_ok() { ok += 1 } else { bad += 1 }
+                }
+                a.toast(&if files.is_empty() {
+                    "No .cube files in that folder".to_string()
+                } else if bad > 0 {
+                    format!("Added {ok} LUTs ({bad} couldn't be read)")
+                } else {
+                    format!("Added {ok} LUTs to My LUTs")
+                });
+                if ok > 0 {
+                    a.ui.brand.set_selected(lut_brand);
+                    a.fill_films();
+                    a.request_render();
+                }
+            });
+        });
+    }
+    // menu actions and shortcuts
+    {
+        let act = gio::SimpleAction::new_stateful("histogram", None, &true.to_variant());
+        let a = Rc::downgrade(&app);
+        act.connect_activate(move |act, _| {
+            let Some(a) = a.upgrade() else { return };
+            let on = !a.show_hist.get();
+            a.show_hist.set(on);
+            act.set_state(&on.to_variant());
+            a.ui.histogram.queue_draw();
+        });
+        window.add_action(&act);
+        let reset = gio::SimpleAction::new("reset", None);
+        let a = Rc::downgrade(&app);
+        reset.connect_activate(move |_, _| {
+            if let Some(a) = a.upgrade() {
+                a.reset_crop();
+                a.apply_settings(&Settings::default());
+                a.toast("All edits reset (Undo brings them back)");
+            }
+        });
+        window.add_action(&reset);
+        let shortcuts = gio::SimpleAction::new("shortcuts", None);
+        let w = window.clone();
+        shortcuts.connect_activate(move |_, _| shortcuts_dialog(&w));
+        window.add_action(&shortcuts);
+        let about = gio::SimpleAction::new("about", None);
+        let w = window.clone();
+        about.connect_activate(move |_, _| {
+            let d = adw::AboutDialog::builder()
+                .application_name("Alpha Studio")
+                .application_icon("image-x-generic")
+                .developer_name("jegly")
+                .version(env!("CARGO_PKG_VERSION"))
+                .comments("Film Sim's looks and Ghosts' AI effects from the Sony A7 II apps, for photos on your computer, with Real-ESRGAN upscaling.")
+                .build();
+            d.present(Some(&w));
+        });
+        window.add_action(&about);
+        for (name, back) in [("undo", true), ("redo", false)] {
+            let act = gio::SimpleAction::new(name, None);
+            let a = Rc::downgrade(&app);
+            act.connect_activate(move |_, _| {
+                if let Some(a) = a.upgrade() {
+                    a.step_history(back);
+                }
+            });
+            window.add_action(&act);
+        }
+        let open_act = gio::SimpleAction::new("open", None);
+        let ob = open_button.clone();
+        open_act.connect_activate(move |_, _| ob.emit_clicked());
+        window.add_action(&open_act);
+        let export_act = gio::SimpleAction::new("export", None);
+        let eb = export_button.clone();
+        export_act.connect_activate(move |_, _| {
+            if eb.is_sensitive() {
+                eb.emit_clicked();
+            }
+        });
+        window.add_action(&export_act);
+        application.set_accels_for_action("win.open", &["<Ctrl>o"]);
+        application.set_accels_for_action("win.export", &["<Ctrl>e"]);
+        application.set_accels_for_action("win.undo", &["<Ctrl>z"]);
+        application.set_accels_for_action("win.redo", &["<Ctrl><Shift>z", "<Ctrl>y"]);
     }
 
     // white balance: presets set the temperature, moving the temperature makes it Custom
@@ -1146,13 +1784,26 @@ fn build(app: &adw::Application) {
     {
         let keys = gtk::EventControllerKey::new();
         let a = Rc::downgrade(&app);
-        keys.connect_key_pressed(move |_, key, _, _| {
+        keys.connect_key_pressed(move |_, key, _, state| {
             let Some(a) = a.upgrade() else { return glib::Propagation::Proceed };
-            if a.cropping() && (key == gdk::Key::Return || key == gdk::Key::KP_Enter) {
+            if a.cropping() && (key == gdk::Key::Return || key == gdk::Key::KP_Enter || key == gdk::Key::Escape) {
                 a.ui.crop_button.set_active(false);
                 return glib::Propagation::Stop;
             }
-            glib::Propagation::Proceed
+            // single-letter shortcuts, unless typing somewhere
+            let typing = gtk::prelude::GtkWindowExt::focus(&a.ui.window).is_some_and(|w| w.is::<gtk::Text>() || w.is::<gtk::Entry>());
+            if typing || state.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK) || a.sessions.borrow().is_empty() {
+                return glib::Propagation::Proceed;
+            }
+            match key.to_unicode().map(|c| c.to_ascii_lowercase()) {
+                Some('c') => a.ui.crop_button.set_active(!a.ui.crop_button.is_active()),
+                Some('b') | Some('\\') => a.ui.before.set_active(!a.ui.before.is_active()),
+                Some('h') => {
+                    let _ = gtk::prelude::WidgetExt::activate_action(&a.ui.window, "win.histogram", None);
+                }
+                _ => return glib::Propagation::Proceed,
+            }
+            glib::Propagation::Stop
         });
         window.add_controller(keys);
     }
@@ -1226,6 +1877,30 @@ fn build(app: &adw::Application) {
     window.present();
 }
 
+fn shortcuts_dialog(window: &adw::ApplicationWindow) {
+    let page = adw::PreferencesPage::new();
+    let group = adw::PreferencesGroup::new();
+    for (keys, what) in [
+        ("Ctrl+O", "Open photos"),
+        ("Ctrl+E", "Export"),
+        ("Ctrl+Z", "Undo"),
+        ("Ctrl+Shift+Z or Ctrl+Y", "Redo"),
+        ("B", "Before and after"),
+        ("C", "Crop, straighten and rotate"),
+        ("Enter or Esc", "Finish cropping"),
+        ("H", "Histogram on or off"),
+        ("Double-click a slider", "Put it back to its default"),
+    ] {
+        group.add(&adw::ActionRow::builder().title(what).subtitle(keys).use_markup(false).build());
+    }
+    page.add(&group);
+    let view = adw::ToolbarView::new();
+    view.add_top_bar(&adw::HeaderBar::new());
+    view.set_content(Some(&page));
+    let d = adw::Dialog::builder().title("Keyboard shortcuts").content_width(420).content_height(520).child(&view).build();
+    d.present(Some(window));
+}
+
 /// The export dialog: format, size, upscaling, sharpening, EXIF, naming and folder; runs in the background.
 fn export_dialog(app: &Rc<App>) {
     let opts = app.export_opts.borrow().clone();
@@ -1242,7 +1917,7 @@ fn export_dialog(app: &Rc<App>) {
     which.set_visible(sessions.len() > 1 && !multi);
     let format = combo("Format", &export::FORMATS, opts.format);
     let quality = spin("JPEG quality", 50.0, 100.0, 1.0, opts.quality as f64, 0);
-    let exif = adw::SwitchRow::builder().title("Keep EXIF").subtitle("Camera, lens, date and settings (from JPEG originals)").active(opts.keep_exif).build();
+    let exif = adw::SwitchRow::builder().title("Keep EXIF").subtitle("Camera, lens, date and exposure (JPEG export)").active(opts.keep_exif).build();
     let suffix = adw::EntryRow::builder().title("Name ending").text(&opts.suffix).build();
     let folder_row = adw::ActionRow::builder().title("Folder").subtitle(opts.folder.as_ref().map(|f| f.display().to_string()).unwrap_or("Next to the original".into())).build();
     let folder_button = gtk::Button::builder().label("Choose\u{2026}").valign(gtk::Align::Center).build();
