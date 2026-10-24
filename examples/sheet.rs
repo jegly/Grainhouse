@@ -1,6 +1,6 @@
 //! Contact sheets for tuning looks on a real photo:
 //!   cargo run --release --example sheet -- photo out.jpg cameras|effects|new|creative|adjust|frames
-use alpha_studio::{adjust::Adjust, camera, creative, img::Image, io, pipeline::{self, Session, Settings}};
+use grainhouse::{adjust::Adjust, camera, creative, img::Image, io, pipeline::{self, Session, Settings}};
 use std::path::Path;
 use std::time::Instant;
 
@@ -44,8 +44,8 @@ fn variants(mode: &str) -> Vec<(String, Settings)> {
             .map(|(n, a)| (n.to_string(), Settings { adjust: a, ..d.clone() }))
             .collect()
         }
-        "frames" => (0..alpha_studio::frame::NAMES.len())
-            .map(|f| (alpha_studio::frame::NAMES[f].to_string(), Settings { frame: f, film: if f == 6 { Some("57.bin".into()) } else { None }, ..d.clone() }))
+        "frames" => (0..grainhouse::frame::NAMES.len())
+            .map(|f| (grainhouse::frame::NAMES[f].to_string(), Settings { frame: f, film: if f == 6 { Some("57.bin".into()) } else { None }, ..d.clone() }))
             .collect(),
         _ => panic!("unknown mode {mode}"),
     }

@@ -22,7 +22,8 @@ fn main() {
     names.sort();
     let mut code = String::from("&[\n");
     for n in &names {
-        code += &format!("    ({n:?}, include_bytes!({:?}) as &[u8]),\n", dir.join(n));
+        // relative to the project, so the folder can be moved
+        code += &format!("    ({n:?}, include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/assets/films/{n}\")) as &[u8]),\n");
     }
     code += "]\n";
     fs::write(Path::new(&env::var("OUT_DIR").unwrap()).join("films.rs"), code).unwrap();

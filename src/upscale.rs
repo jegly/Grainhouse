@@ -23,7 +23,7 @@ static SESSIONS: Mutex<[Option<Session>; 3]> = Mutex::new([None, None, None]);
 
 fn environment() -> Result<&'static ort::environment::Environment, String> {
     static ENV: OnceLock<Result<ort::environment::Environment, String>> = OnceLock::new();
-    ENV.get_or_init(|| ort::init().with_name("alpha-studio").build().map_err(|e| format!("ONNX Runtime failed to start: {e}")))
+    ENV.get_or_init(|| ort::init().with_name("grainhouse").build().map_err(|e| format!("ONNX Runtime failed to start: {e}")))
         .as_ref()
         .map_err(|e| e.clone())
 }

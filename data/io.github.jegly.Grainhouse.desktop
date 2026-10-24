@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Grainhouse
+GenericName=Photo editor
+Comment=Film looks, AI effects and upscaling for your photos
+Exec=grainhouse %F
+Icon=io.github.jegly.Grainhouse
+Terminal=false
+Categories=Graphics;Photography;GTK;
+MimeType=image/x-sony-arw;image/x-sony-sr2;image/x-sony-srf;image/x-adobe-dng;image/x-canon-cr2;image/x-canon-cr3;image/x-nikon-nef;image/x-fuji-raf;image/x-olympus-orf;image/x-panasonic-rw2;image/jpeg;image/png;image/tiff;
+Keywords=photo;raw;arw;film;lut;filter;upscale;
+StartupWMClass=io.github.jegly.Grainhouse

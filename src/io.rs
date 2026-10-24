@@ -60,6 +60,34 @@ pub struct RawLinear {
 }
 
 impl RawLinear {
+    /// A smaller copy (whole-pixel box average) with the long side at most about `long`.
+    pub fn shrink(&self, long: usize) -> RawLinear {
+        let f = self.w.max(self.h).div_ceil(long.max(1)).max(1);
+        if f == 1 {
+            return RawLinear { w: self.w, h: self.h, rgb: self.rgb.clone(), orientation: self.orientation, white_xy: self.white_xy };
+        }
+        let (w, h) = (self.w / f, self.h / f);
+        let mut rgb = vec![0f32; w * h * 3];
+        rgb.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
+            for x in 0..w {
+                let mut s = [0f32; 3];
+                for yy in y * f..(y + 1) * f {
+                    for xx in x * f..(x + 1) * f {
+                        let i = (yy * self.w + xx) * 3;
+                        for c in 0..3 {
+                            s[c] += self.rgb[i + c];
+                        }
+                    }
+                }
+                let n = (f * f) as f32;
+                for c in 0..3 {
+                    row[x * 3 + c] = s[c] / n;
+                }
+            }
+        });
+        RawLinear { w, h, rgb, orientation: self.orientation, white_xy: self.white_xy }
+    }
+
     /// The camera's white balance as a colour temperature.
     pub fn as_shot_kelvin(&self) -> Option<f32> {
         self.white_xy.map(crate::whitebalance::kelvin_of)

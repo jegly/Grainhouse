@@ -16,11 +16,17 @@ pub struct Geometry {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// lens distortion: above 0 straightens barrel distortion (wide lenses), below 0 pincushion (-1..1)
+    pub distortion: f32,
+    /// perspective: above 0 straightens verticals that lean in at the top (-1..1)
+    pub vertical: f32,
+    /// perspective sideways (-1..1)
+    pub horizontal: f32,
 }
 
 impl Default for Geometry {
     fn default() -> Self {
-        Geometry { quarter: 0, angle: 0.0, x: 0.0, y: 0.0, w: 1.0, h: 1.0 }
+        Geometry { quarter: 0, angle: 0.0, x: 0.0, y: 0.0, w: 1.0, h: 1.0, distortion: 0.0, vertical: 0.0, horizontal: 0.0 }
     }
 }
 
@@ -30,7 +36,30 @@ impl Geometry {
     }
 
     pub fn is_identity(&self) -> bool {
-        self.quarter % 4 == 0 && self.angle == 0.0 && !self.is_cropped()
+        self.quarter % 4 == 0 && self.angle == 0.0 && !self.is_cropped() && !self.has_lens()
+    }
+
+    pub fn has_lens(&self) -> bool {
+        self.distortion != 0.0 || self.vertical != 0.0 || self.horizontal != 0.0
+    }
+
+    /// Where a point of the straightened frame (pixels from its centre) comes from in a w x h (turned) photo,
+    /// also from its centre.
+    fn source_of(&self, w: f32, h: f32, fx: f32, fy: f32) -> (f32, f32) {
+        let (sn, cs) = self.angle.to_radians().sin_cos();
+        let (sx, sy) = (fx * cs + fy * sn, -fx * sn + fy * cs);
+        if !self.has_lens() {
+            return (sx, sy);
+        }
+        let (mut u, mut v) = (sx / (w / 2.0), sy / (h / 2.0));
+        // keystone: widen the top (or a side) to undo converging lines
+        u *= 1.0 + self.vertical * 0.3 * v;
+        v *= 1.0 + self.horizontal * 0.3 * u;
+        let (px, py) = (u * w / 2.0, v * h / 2.0);
+        let diag = (w * w + h * h).sqrt() / 2.0;
+        let r2 = (px * px + py * py) / (diag * diag);
+        let k = 1.0 + self.distortion * 0.25 * r2;
+        (px * k, py * k)
     }
 
     /// The same turn and straighten with the whole frame (what the crop tool shows).
@@ -41,7 +70,7 @@ impl Geometry {
     /// Size of the frame after turning and straightening a w x h photo.
     pub fn frame(&self, w: usize, h: usize) -> (f32, f32) {
         let (w, h) = if self.quarter % 2 == 1 { (h, w) } else { (w, h) };
-        frame_of(w as f32, h as f32, self.angle)
+        frame_for(self, w as f32, h as f32)
     }
 
     /// Size of the finished crop of a w x h photo, in pixels.
@@ -72,6 +101,33 @@ fn frame_of(w: f32, h: f32, deg: f32) -> (f32, f32) {
     (w * k, h * k)
 }
 
+/// The frame for a turned w x h photo: straightened analytically, or with lens corrections the largest frame
+/// whose edge all maps inside the photo.
+fn frame_for(g: &Geometry, w: f32, h: f32) -> (f32, f32) {
+    if !g.has_lens() {
+        return frame_of(w, h, g.angle);
+    }
+    let fits = |k: f32| {
+        let (fw, fh) = (w * k, h * k);
+        (0..=32).all(|i| {
+            let t = i as f32 / 32.0;
+            [(t - 0.5, -0.5), (t - 0.5, 0.5), (-0.5, t - 0.5), (0.5, t - 0.5)].iter().all(|&(a, b)| {
+                let (sx, sy) = g.source_of(w, h, a * fw, b * fh);
+                sx.abs() <= w / 2.0 && sy.abs() <= h / 2.0
+            })
+        })
+    };
+    let (mut lo, mut hi) = (0.2f32, 1.0f32);
+    if fits(hi) {
+        return (w, h);
+    }
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if fits(mid) { lo = mid } else { hi = mid }
+    }
+    (w * lo, h * lo)
+}
+
 fn turn(img: Image, quarter: u8) -> Image {
     match quarter % 4 {
         1 => crate::io::orient(img, 6),
@@ -91,11 +147,11 @@ pub fn apply(img: &Image, g: &Geometry, long: usize) -> Image {
     let k = (long as f32 / cw.max(ch) as f32).min(1.0);
     let pre = if k < 1.0 { img.resized(((img.w as f32 * k).round() as usize).max(2), ((img.h as f32 * k).round() as usize).max(2)) } else { img.clone() };
     let pre = turn(pre, g.quarter);
-    let (fw, fh) = frame_of(pre.w as f32, pre.h as f32, g.angle);
+    let (fw, fh) = frame_for(g, pre.w as f32, pre.h as f32);
     let ow = ((fw * g.w).round() as usize).clamp(1, pre.w);
     let oh = ((fh * g.h).round() as usize).clamp(1, pre.h);
     let mut out = Image::new(ow, oh);
-    if g.angle == 0.0 {
+    if g.angle == 0.0 && !g.has_lens() {
         let x0 = ((fw * g.x).round() as usize).min(pre.w - ow);
         let y0 = ((fh * g.y).round() as usize).min(pre.h - oh);
         out.px.par_chunks_mut(ow).enumerate().for_each(|(y, row)| {
@@ -105,16 +161,15 @@ pub fn apply(img: &Image, g: &Geometry, long: usize) -> Image {
         return out;
     }
     let (cx, cy) = (pre.w as f32 / 2.0, pre.h as f32 / 2.0);
-    let (sn, cs) = g.angle.to_radians().sin_cos();
+    let (pw, ph) = (pre.w as f32, pre.h as f32);
     let (step_x, step_y) = (fw * g.w / ow as f32, fh * g.h / oh as f32);
     out.px.par_chunks_mut(ow).enumerate().for_each(|(v, row)| {
         let fy = fh * g.y + (v as f32 + 0.5) * step_y - fh / 2.0;
         for (u, p) in row.iter_mut().enumerate() {
             let fx = fw * g.x + (u as f32 + 0.5) * step_x - fw / 2.0;
-            // back from the straightened frame into the photo
-            let sx = cx + fx * cs + fy * sn;
-            let sy = cy - fx * sn + fy * cs;
-            *p = bilinear(&pre, sx - 0.5, sy - 0.5);
+            // back from the straightened (and corrected) frame into the photo
+            let (sx, sy) = g.source_of(pw, ph, fx, fy);
+            *p = bilinear(&pre, cx + sx - 0.5, cy + sy - 0.5);
         }
     });
     out

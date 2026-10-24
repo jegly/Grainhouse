@@ -1,5 +1,5 @@
 //! Presets: whole looks in one click. Built-in ones, and the user's own saved as JSON in
-//! ~/.local/share/alpha-studio/presets. A preset holds everything except the crop and the photo's own exposure
+//! ~/.local/share/grainhouse/presets. A preset holds everything except the crop and the photo's own exposure
 //! and white balance, which belong to each photo.
 
 use crate::adjust::Adjust;
@@ -24,7 +24,8 @@ pub fn builtin() -> Vec<(&'static str, Settings)> {
     let mut v = Vec::new();
     let mut s = d();
     s.film = film("109.bin");
-    s.diffusion = 2;
+    s.strength = 0.85;
+    s.diffusion = 1;
     s.develop.halation = true;
     s.develop.grain = 1;
     v.push(("CineStill night", s));

@@ -1,5 +1,5 @@
 [package]
-name = "alpha-studio"
+name = "grainhouse"
 version = "0.1.0"
 edition = "2024"
 
@@ -28,10 +28,10 @@ default = ["gui"]
 gui = ["dep:gtk", "dep:adw", "dep:async-channel"]
 
 [[bin]]
-name = "alpha-studio"
+name = "grainhouse"
 path = "src/main.rs"
 required-features = ["gui"]
 
 [[bin]]
-name = "alpha-cli"
-path = "src/bin/alpha-cli.rs"
+name = "grainhouse-cli"
+path = "src/bin/grainhouse-cli.rs"

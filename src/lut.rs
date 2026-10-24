@@ -1,5 +1,5 @@
 //! My LUTs: .cube files (3D or 1D, as made by Resolve, Photoshop, Lightroom profiles and LUT packs), kept in
-//! ~/.local/share/alpha-studio/luts. Applied in full (trilinear), unlike on the camera where they had to be
+//! ~/.local/share/grainhouse/luts. Applied in full (trilinear), unlike on the camera where they had to be
 //! squeezed into a curve and a matrix. Expects LUTs made for normal (sRGB / Rec.709) pictures, not log footage.
 
 use rayon::prelude::*;
@@ -24,7 +24,7 @@ pub fn dir() -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share"));
-    base.join("alpha-studio/luts")
+    base.join("grainhouse/luts")
 }
 
 /// The LUTs in the folder: (name without .cube, path), sorted by name.

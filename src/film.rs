@@ -1,4 +1,4 @@
-//! Film Sim's 153 film looks: a 1024-point tone curve on each channel, then a 3x3 colour matrix, exactly
+//! The 153 film looks: a 1024-point tone curve on each channel, then a 3x3 colour matrix, exactly
 //! what the A7 II's image processor does with them in the camera app.
 
 use crate::img::{pack_f, unpack};

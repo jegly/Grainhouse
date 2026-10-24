@@ -90,6 +90,8 @@ pub struct Settings {
     pub adjust: crate::adjust::Adjust,
     /// frame or border round the picture (frame::NAMES)
     pub frame: usize,
+    /// a local adjustment through a mask
+    pub local: crate::local::Local,
 }
 
 impl Default for Settings {
@@ -115,6 +117,7 @@ impl Default for Settings {
             date_stamp: false,
             adjust: crate::adjust::Adjust::default(),
             frame: 0,
+            local: crate::local::Local::default(),
         }
     }
 }
@@ -134,26 +137,46 @@ pub struct Session {
     /// a JPEG/PNG/TIFF as loaded (the base is made from it with the light controls)
     original: Option<Image>,
     base: Mutex<(RawOptions, Image)>,
+    /// the same at preview size, so moving a light slider stays quick
+    small_raw: Option<RawLinear>,
+    small_original: Option<Image>,
+    small: Mutex<(RawOptions, Image)>,
     cache: Mutex<HashMap<String, Found>>,
     /// when the photo was taken, for the date stamp
     pub date: Option<(i32, u32, u32)>,
 }
+
+/// Long side of the preview-size copy.
+const SMALL_LONG: usize = 2560;
 
 /// Long side of the copy the models look at.
 const DETECT_SIZE: usize = 2048;
 
 impl Session {
     pub fn open(path: &Path) -> Result<Session, String> {
-        let (raw, base, original) = if io::is_raw(path) {
+        let (raw, base, original, small_raw, small_original, small) = if io::is_raw(path) {
             let raw = io::decode_raw(path)?;
             let img = io::render_raw(&raw, RawOptions::default());
-            (Some(raw), img, None)
+            let sr = raw.shrink(SMALL_LONG);
+            let small = io::render_raw(&sr, RawOptions::default());
+            (Some(raw), img, None, Some(sr), None, small)
         } else {
             let img = io::load_image(path)?;
-            (None, img.clone(), Some(img))
+            let so = img.fit(SMALL_LONG);
+            (None, img.clone(), Some(img), None, Some(so.clone()), so)
         };
         let date = crate::camera::photo_date(path);
-        Ok(Session { path: path.to_path_buf(), raw, original, base: Mutex::new((RawOptions::default(), base)), cache: Mutex::new(HashMap::new()), date })
+        Ok(Session {
+            path: path.to_path_buf(),
+            raw,
+            original,
+            base: Mutex::new((RawOptions::default(), base)),
+            small_raw,
+            small_original,
+            small: Mutex::new((RawOptions::default(), small)),
+            cache: Mutex::new(HashMap::new()),
+            date,
+        })
     }
 
     pub fn is_raw(&self) -> bool {
@@ -196,16 +219,89 @@ impl Session {
         s.geometry.size(w, h)
     }
 
-    /// The developed photo turned, straightened and cropped, long side at most `long`.
+    /// The developed photo turned, straightened and cropped, long side at most `long`. Uses the preview-size
+    /// copy when it still has enough pixels for the crop.
     fn shaped(&self, s: &Settings, long: usize) -> Image {
+        {
+            let mut b = self.small.lock().unwrap();
+            let (cw, ch) = s.geometry.size(b.1.w, b.1.h);
+            let (fw, fh) = self.size();
+            if cw.max(ch) >= long.min(s.geometry.size(fw, fh).0.max(s.geometry.size(fw, fh).1)) {
+                if b.0 != s.raw {
+                    let img = if let Some(r) = &self.small_raw {
+                        io::render_raw(r, s.raw)
+                    } else if let Some(o) = &self.small_original {
+                        io::render_display(o, s.raw)
+                    } else {
+                        b.1.clone()
+                    };
+                    *b = (s.raw, img);
+                }
+                return geometry::apply(&b.1, &s.geometry, long);
+            }
+        }
         let mut b = self.base.lock().unwrap();
         self.develop(&mut b, s.raw);
         geometry::apply(&b.1, &s.geometry, long)
     }
 
+    /// Light settings worked out from the photo (the Auto button): exposure to put the middle tones at mid-grey,
+    /// then shadows, highlights, whites and blacks to use the whole range without clipping. Keeps white balance.
+    pub fn auto_light(&self, current: RawOptions) -> RawOptions {
+        let probe = RawOptions { kelvin: current.kelvin, tint: current.tint, ..RawOptions::default() };
+        let img = {
+            let b = self.small.lock().unwrap();
+            if let Some(r) = &self.small_raw { io::render_raw(r, probe) } else if let Some(o) = &self.small_original { io::render_display(o, probe) } else { b.1.clone() }
+        };
+        let lin = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+        let mut l: Vec<f32> = img
+            .px
+            .iter()
+            .step_by(7)
+            .map(|p| lin((0.299 * ((p >> 16) & 255) as f32 + 0.587 * ((p >> 8) & 255) as f32 + 0.114 * (p & 255) as f32) / 255.0))
+            .collect();
+        if l.is_empty() {
+            return current;
+        }
+        l.sort_by(|a, b| a.total_cmp(b));
+        let at = |q: f32| l[((l.len() - 1) as f32 * q) as usize];
+        // the average brightness in stops (so a few bright or dark areas don't dominate), aimed at mid-grey,
+        // but never so far that the brightest areas would clip
+        let mean_log = l.iter().map(|v| v.max(1e-4).log2()).sum::<f32>() / l.len() as f32;
+        let towards_grey = (0.16f32.log2() - mean_log) * 0.6;
+        let headroom = (0.92 / at(0.985).max(1e-4)).log2();
+        let exposure = towards_grey.min(headroom.max(0.0)).clamp(-1.5, 1.5);
+        let gain = exposure.exp2();
+        let bright = at(0.99) * gain;
+        let dark = at(0.03) * gain;
+        RawOptions {
+            exposure: (exposure * 20.0).round() / 20.0,
+            highlights: if bright > 0.85 { -(((bright - 0.85) * 2.0).min(0.6)) } else { 0.0 },
+            shadows: if dark < 0.01 { (0.35 - dark * 20.0).clamp(0.0, 0.35) } else { 0.0 },
+            whites: if bright < 0.7 { ((0.7 - bright) * 1.5).min(0.4) } else { 0.0 },
+            blacks: if dark > 0.03 { -((dark - 0.03) * 6.0).min(0.3) } else { 0.0 },
+            ..current
+        }
+    }
+
+    /// The AI subject mask for local adjustments (people, from the cropped picture), cached like the effects'.
+    fn subject_mask(&self, s: &Settings) -> Result<Option<fx::extra::Mask>, String> {
+        let mut q = s.clone();
+        q.effect = GHOSTS;
+        q.target = 0;
+        let f = self.found(&q)?;
+        Ok(f.subjects.filter(|x| x.count > 0).map(|x| fx::extra::Mask::new(&x.mask, x.mw, x.mh)))
+    }
+
     /// True when rendering with these settings will run the AI models first (the slow part).
     pub fn needs_ai(&self, s: &Settings) -> bool {
-        needs_model(s.effect) && (!is_multi(s.effect) || s.effect == DOUBLE) && !self.cache.lock().unwrap().contains_key(&found_key(s))
+        let local = crate::local::uses_subject(s.local.kind) && {
+            let mut q = s.clone();
+            q.effect = GHOSTS;
+            q.target = 0;
+            !self.cache.lock().unwrap().contains_key(&found_key(&q))
+        };
+        local || (needs_model(s.effect) && (!is_multi(s.effect) || s.effect == DOUBLE) && !self.cache.lock().unwrap().contains_key(&found_key(s)))
     }
 
     /// After a render: a note when the effect found nothing to work on, with what to try.
@@ -281,8 +377,13 @@ impl Session {
         let mut img = self.shaped(s, long);
         crate::camera::colour(&mut img, s.camera, s.camera_strength);
         apply_film(&mut img, s)?;
+        crate::adjust::apply_curve(&mut img, &s.adjust);
         crate::adjust::apply_colour(&mut img, &s.adjust);
         crate::adjust::apply_detail(&mut img, &s.adjust);
+        if s.local.kind != 0 {
+            let mask = if crate::local::uses_subject(s.local.kind) { self.subject_mask(s)? } else { None };
+            crate::local::apply(&mut img, &s.local, mask.as_ref());
+        }
         if s.effect != NONE && !is_multi(s.effect) {
             let found = self.found(s)?;
             apply_effect(&mut img, s, &found, seed_of(&self.path), self.date);
@@ -323,7 +424,7 @@ fn finish(img: &mut Image, s: &Settings, seed: u64, date: Option<(i32, u32, u32)
         let preview = img.resized(dw, dh);
         fx::run(&Diffusion::new(&preview.px, dw, dh, s.diffusion, &s.diffusion_opt), img);
     }
-    crate::adjust::apply_vignette(img, s.adjust.vignette);
+    crate::adjust::apply_vignette(img, s.adjust.vignette, s.adjust.vignette_mid, s.adjust.vignette_feather);
     if s.date_stamp {
         if let Some(date) = date {
             crate::camera::date_stamp(img, date);
@@ -341,7 +442,7 @@ fn finish(img: &mut Image, s: &Settings, seed: u64, date: Option<(i32, u32, u32)
 /// What a 35 mm strip's edge says: the film's name if one is chosen.
 fn edge_label(s: &Settings) -> String {
     let name = s.film.as_deref().and_then(|f| film::films().into_iter().find(|x| x.file == f).map(|x| x.name.to_string()));
-    let name = name.unwrap_or_else(|| "ALPHA 400".to_string()).to_uppercase();
+    let name = name.unwrap_or_else(|| "GRAINHOUSE 400".to_string()).to_uppercase();
     name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == ' ').take(18).collect()
 }
 
@@ -424,8 +525,27 @@ pub fn render_multi(sessions: &[&Session], s: &Settings, long: usize) -> Result<
     };
     crate::camera::colour(&mut img, s.camera, s.camera_strength);
     apply_film(&mut img, s)?;
+    crate::adjust::apply_curve(&mut img, &s.adjust);
     crate::adjust::apply_colour(&mut img, &s.adjust);
     crate::adjust::apply_detail(&mut img, &s.adjust);
+    if s.local.kind != 0 {
+        let mask = if crate::local::uses_subject(s.local.kind) { sessions[0].subject_mask(s)? } else { None };
+        crate::local::apply(&mut img, &s.local, mask.as_ref());
+    }
     finish(&mut img, s, sessions.first().map(|x| seed_of(&x.path)).unwrap_or(1), sessions.first().and_then(|x| x.date));
     Ok(img)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn auto_light_is_sane_on_a_dark_scene() {
+        let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/JES05253.JPG"));
+        if !path.exists() {
+            return;
+        }
+        let s = super::Session::open(path).unwrap();
+        let r = s.auto_light(crate::io::RawOptions::default());
+        assert!(r.exposure.abs() <= 1.5, "{r:?}");
+    }
 }

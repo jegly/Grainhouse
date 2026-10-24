@@ -11,9 +11,15 @@ pub const MIXER_NAMES: [&str; 8] = ["Red", "Orange", "Yellow", "Green", "Aqua", 
 const MIXER_HUES: [f32; 8] = [29.0, 55.0, 110.0, 142.0, 195.0, 264.0, 293.0, 328.0];
 pub const GRADE_NAMES: [&str; 3] = ["Shadows", "Midtones", "Highlights"];
 
-#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub const CURVE_CHANNELS: [&str; 4] = ["RGB", "Red", "Green", "Blue"];
+/// Where the tone curve's points sit along the input (shadows to highlights).
+pub const CURVE_X: [f32; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
+
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Adjust {
+    /// tone curve output levels at CURVE_X, for RGB, red, green and blue
+    pub curve: [[f32; 5]; 4],
     /// -1..1: lifts muted colours more than strong ones, and skin less
     pub vibrance: f32,
     /// -1 (black and white) .. 1
@@ -34,6 +40,98 @@ pub struct Adjust {
     pub sharpen: f32,
     /// -1 darker corners .. 1 lighter
     pub vignette: f32,
+    /// 0..1: where the vignette starts (higher = only the corners)
+    pub vignette_mid: f32,
+    /// 0..1: how soft its edge is
+    pub vignette_feather: f32,
+    /// sharpening radius in pixels at 3000 px wide (0.5..3)
+    pub sharpen_radius: f32,
+    /// 0..1: sharpen only edges, not smooth areas like skin and sky
+    pub sharpen_masking: f32,
+    /// 0..1 luminance noise reduction
+    pub noise: f32,
+    /// 0..1 colour noise reduction
+    pub colour_noise: f32,
+    /// 0..1 removes purple and green fringes on high-contrast edges
+    pub defringe: f32,
+}
+
+impl Default for Adjust {
+    fn default() -> Self {
+        Adjust {
+            curve: [CURVE_X; 4],
+            vibrance: 0.0,
+            saturation: 0.0,
+            mixer: [[0.0; 3]; 8],
+            grade: [[0.0; 2]; 3],
+            balance: 0.0,
+            clarity: 0.0,
+            texture: 0.0,
+            dehaze: 0.0,
+            sharpen: 0.0,
+            vignette: 0.0,
+            vignette_mid: 0.5,
+            vignette_feather: 0.5,
+            sharpen_radius: 1.0,
+            sharpen_masking: 0.0,
+            noise: 0.0,
+            colour_noise: 0.0,
+            defringe: 0.0,
+        }
+    }
+}
+
+/// A smooth curve through the five points that never overshoots (monotone cubic), as a 256-entry table.
+pub fn curve_table(y: &[f32; 5]) -> [f32; 256] {
+    let x = CURVE_X;
+    let n = 5;
+    let d: Vec<f32> = (0..n - 1).map(|i| (y[i + 1] - y[i]) / (x[i + 1] - x[i])).collect();
+    let mut m = vec![0f32; n];
+    m[0] = d[0];
+    m[n - 1] = d[n - 2];
+    for i in 1..n - 1 {
+        m[i] = if d[i - 1] * d[i] <= 0.0 { 0.0 } else { (d[i - 1] + d[i]) / 2.0 };
+    }
+    for i in 0..n - 1 {
+        if d[i] == 0.0 {
+            m[i] = 0.0;
+            m[i + 1] = 0.0;
+        } else {
+            let (a, b) = (m[i] / d[i], m[i + 1] / d[i]);
+            let t = a * a + b * b;
+            if t > 9.0 {
+                let k = 3.0 / t.sqrt();
+                m[i] = k * a * d[i];
+                m[i + 1] = k * b * d[i];
+            }
+        }
+    }
+    let mut out = [0f32; 256];
+    for (v, o) in out.iter_mut().enumerate() {
+        let t = v as f32 / 255.0;
+        let i = ((t * 4.0) as usize).min(3);
+        let h = x[i + 1] - x[i];
+        let s = (t - x[i]) / h;
+        let (h00, h10, h01, h11) = (2.0 * s * s * s - 3.0 * s * s + 1.0, s * s * s - 2.0 * s * s + s, -2.0 * s * s * s + 3.0 * s * s, s * s * s - s * s);
+        *o = (h00 * y[i] + h10 * h * m[i] + h01 * y[i + 1] + h11 * h * m[i + 1]).clamp(0.0, 1.0);
+    }
+    out
+}
+
+/// The tone curve: RGB first, then each channel's own.
+pub fn apply_curve(img: &mut Image, a: &Adjust) {
+    if a.curve.iter().all(|c| *c == CURVE_X) {
+        return;
+    }
+    let all = curve_table(&a.curve[0]);
+    let lut: [Vec<u8>; 3] = [1, 2, 3].map(|ch| {
+        let own = curve_table(&a.curve[ch]);
+        (0..256).map(|v| (own[((all[v] * 255.0).round() as usize).min(255)] * 255.0).round() as u8).collect()
+    });
+    img.px.par_iter_mut().for_each(|p| {
+        let (r, g, b) = ((*p >> 16) & 255, (*p >> 8) & 255, *p & 255);
+        *p = ((lut[0][r as usize] as u32) << 16) | ((lut[1][g as usize] as u32) << 8) | lut[2][b as usize] as u32;
+    });
 }
 
 impl Adjust {
@@ -158,6 +256,9 @@ fn unpack(p: u32) -> [f32; 3] {
 pub fn apply_detail(img: &mut Image, a: &Adjust) {
     let (w, h) = (img.w, img.h);
     let long = w.max(h) as f32;
+    if a.noise > 0.0 || a.colour_noise > 0.0 || a.defringe > 0.0 {
+        denoise(img, a);
+    }
     if a.dehaze != 0.0 {
         let mut haze: Vec<f32> = img.px.iter().map(|&p| unpack(p).into_iter().fold(1.0, f32::min)).collect();
         gaussian(&mut haze, w, h, ((0.015 * long) as usize).max(1));
@@ -183,7 +284,21 @@ pub fn apply_detail(img: &mut Image, a: &Adjust) {
         };
         let big = (a.clarity != 0.0).then(|| blur(0.012 * long));
         let mid = (a.texture != 0.0).then(|| blur(0.0025 * long));
-        let fine = (a.sharpen > 0.0).then(|| blur((long / 3000.0).max(1.0)));
+        let fine = (a.sharpen > 0.0).then(|| blur((long / 3000.0 * a.sharpen_radius.clamp(0.5, 3.0)).max(1.0)));
+        // masking: how much edge there must be before sharpening applies, from a softened edge map
+        let edge = (a.sharpen > 0.0 && a.sharpen_masking > 0.0).then(|| {
+            let b = blur((long / 1500.0).max(1.0));
+            let mut e: Vec<f32> = (0..w * h)
+                .map(|i| {
+                    let (x, y) = (i % w, i / w);
+                    let gx = b[y * w + (x + 1).min(w - 1)] - b[y * w + x.saturating_sub(1)];
+                    let gy = b[(y + 1).min(h - 1) * w + x] - b[y.saturating_sub(1) * w + x];
+                    (gx * gx + gy * gy).sqrt()
+                })
+                .collect();
+            gaussian(&mut e, w, h, 1);
+            e
+        });
         img.px.par_iter_mut().enumerate().for_each(|(i, p)| {
             let v = l[i];
             let mut d = 0.0;
@@ -196,7 +311,8 @@ pub fn apply_detail(img: &mut Image, a: &Adjust) {
             if let Some(b) = &fine {
                 let e = v - b[i];
                 // leave flat areas alone so noise isn't sharpened
-                d += a.sharpen * 1.8 * e * smooth(0.004, 0.02, e.abs());
+                let mask = edge.as_ref().map_or(1.0, |m| smooth(a.sharpen_masking * 0.02, a.sharpen_masking * 0.06 + 0.001, m[i]));
+                d += a.sharpen * 1.8 * e * smooth(0.004, 0.02, e.abs()) * mask;
             }
             if d != 0.0 {
                 *p = pack(unpack(*p).map(|c| c + d));
@@ -205,8 +321,70 @@ pub fn apply_detail(img: &mut Image, a: &Adjust) {
     }
 }
 
-/// Vignette after cropping: darker (negative) or lighter (positive) corners.
-pub fn apply_vignette(img: &mut Image, amount: f32) {
+/// Noise reduction (brightness: an edge-keeping guided filter; colour: the colour blurred) and defringing.
+fn denoise(img: &mut Image, a: &Adjust) {
+    let (w, h) = (img.w, img.h);
+    let long = w.max(h) as f32;
+    let n = w * h;
+    let (mut yy, mut cb, mut cr) = (vec![0f32; n], vec![0f32; n], vec![0f32; n]);
+    for (i, &p) in img.px.iter().enumerate() {
+        let c = unpack(p);
+        yy[i] = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+        cb[i] = c[2] - yy[i];
+        cr[i] = c[0] - yy[i];
+    }
+    let blur = |m: &[f32], r: f32| {
+        let mut v = m.to_vec();
+        crate::util::box_blur(&mut v, w, h, (r as usize).max(1));
+        v
+    };
+    if a.noise > 0.0 {
+        // guided filter of the brightness by itself: flat areas smooth out, edges stay
+        let r = (long / 1500.0 * (1.0 + 2.0 * a.noise)).max(1.0);
+        let eps = (0.002 + 0.03 * a.noise).powi(2);
+        let m = blur(&yy, r);
+        let m2 = blur(&yy.iter().map(|v| v * v).collect::<Vec<_>>(), r);
+        let ak: Vec<f32> = m.iter().zip(&m2).map(|(m, m2)| {
+            let var = (m2 - m * m).max(0.0);
+            var / (var + eps)
+        }).collect();
+        let bk: Vec<f32> = m.iter().zip(&ak).map(|(m, a)| m - a * m).collect();
+        let (am, bm) = (blur(&ak, r), blur(&bk, r));
+        for i in 0..n {
+            let f = am[i] * yy[i] + bm[i];
+            yy[i] += (f - yy[i]) * a.noise.min(1.0);
+        }
+    }
+    if a.colour_noise > 0.0 {
+        let r = (long / 600.0 * (0.5 + 2.0 * a.colour_noise)).max(1.0);
+        let (b2, r2) = (blur(&cb, r), blur(&cr, r));
+        for i in 0..n {
+            cb[i] += (b2[i] - cb[i]) * a.colour_noise.min(1.0);
+            cr[i] += (r2[i] - cr[i]) * a.colour_noise.min(1.0);
+        }
+    }
+    if a.defringe > 0.0 {
+        // purple (blue and red both up) or green (both down) right at strong edges loses its colour
+        let m = blur(&yy, (long / 2000.0).max(1.0));
+        for i in 0..n {
+            let edge = smooth(0.03, 0.12, (yy[i] - m[i]).abs() * 2.0);
+            let purple = smooth(0.02, 0.1, cb[i].min(cr[i]));
+            let green = smooth(0.02, 0.1, (-cb[i]).min(-cr[i]));
+            let k = (a.defringe * edge * (purple + green)).min(1.0);
+            cb[i] *= 1.0 - k;
+            cr[i] *= 1.0 - k;
+        }
+    }
+    img.px.par_iter_mut().enumerate().for_each(|(i, p)| {
+        let (y, b, r) = (yy[i], cb[i] + yy[i], cr[i] + yy[i]);
+        let g = (y - 0.299 * r - 0.114 * b) / 0.587;
+        *p = pack([r, g, b]);
+    });
+}
+
+/// Vignette after cropping: darker (negative) or lighter (positive) corners. `mid` moves where it starts,
+/// `feather` softens it.
+pub fn apply_vignette(img: &mut Image, amount: f32, mid: f32, feather: f32) {
     if amount == 0.0 {
         return;
     }
@@ -216,7 +394,9 @@ pub fn apply_vignette(img: &mut Image, amount: f32) {
     img.px.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         for (x, p) in row.iter_mut().enumerate() {
             let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
-            let f = smooth(0.35, 1.05, (dx * dx + dy * dy).sqrt() / norm).powf(1.4);
+            let start = 0.15 + 0.6 * mid.clamp(0.0, 1.0);
+            let width = 0.1 + 0.9 * feather.clamp(0.0, 1.0);
+            let f = smooth(start, start + width, (dx * dx + dy * dy).sqrt() / norm).powf(1.4);
             let c = unpack(*p);
             *p = pack(if amount < 0.0 { c.map(|v| v * (1.0 + amount * 0.85 * f)) } else { c.map(|v| v + (1.0 - v) * amount * 0.6 * f) });
         }

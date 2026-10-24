@@ -1,4 +1,4 @@
-"""Converts Real-ESRGAN weights (BSD-3, github.com/xinntao/Real-ESRGAN) to ONNX for Alpha Studio.
+"""Converts Real-ESRGAN weights (BSD-3, github.com/xinntao/Real-ESRGAN) to ONNX for Grainhouse.
 
 Usage: esrgan_to_onnx.py <weights.pth> <out.onnx>
 RealESRGAN_x4plus.pth is an RRDBNet; realesr-general-*x4v3.pth are SRVGGNetCompact. The networks are written out

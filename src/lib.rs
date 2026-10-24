@@ -1,4 +1,4 @@
-//! Alpha Studio: the Film Sim looks and Ghosts effects from the Sony A7 II apps, for photos on a computer.
+//! Grainhouse: a photo editor with film looks, AI effects, Lightroom-style editing and Real-ESRGAN upscaling.
 
 pub mod adjust;
 pub mod ai;
@@ -15,6 +15,7 @@ pub mod fx;
 pub mod geometry;
 pub mod img;
 pub mod io;
+pub mod local;
 pub mod localtone;
 pub mod lut;
 pub mod pipeline;

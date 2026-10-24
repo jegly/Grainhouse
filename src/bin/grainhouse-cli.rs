@@ -1,10 +1,12 @@
-//! Command-line use of Alpha Studio, mainly for testing:
-//!   alpha-cli photo.ARW -o out.jpg --film "Portra 400" --effect Ghosts --look Dreamy --diffusion "White Mist 1/2"
-//!   alpha-cli a.jpg b.jpg c.jpg -o out.jpg --effect Trails
-//!   alpha-cli photo.ARW -o out.jpg --rotate cw --straighten 2.5 --crop 0.1,0.1,0.8,0.8 (fractions x,y,w,h)
-//!   alpha-cli --films
+//! Command-line use of Grainhouse, mainly for testing:
+//!   grainhouse-cli photo.ARW -o out.jpg --film "Portra 400" --effect Ghosts --look Dreamy --diffusion "White Mist 1/2"
+//!   grainhouse-cli a.jpg b.jpg c.jpg -o out.jpg --effect Trails
+//!   grainhouse-cli photo.ARW -o out.jpg --rotate cw --straighten 2.5 --crop 0.1,0.1,0.8,0.8 (fractions x,y,w,h)
+//!   grainhouse-cli photo.ARW -o out.jpg --auto              (automatic light, like the Auto button)
+//!   grainhouse-cli photo.ARW -o out.jpg --settings look.json (a saved preset or any settings file)
+//!   grainhouse-cli --films
 
-use alpha_studio::{ai, develop, export, film, fx, pipeline, upscale};
+use grainhouse::{ai, develop, export, film, fx, pipeline, upscale};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -28,6 +30,8 @@ fn main() {
     let mut out = PathBuf::from("out.jpg");
     let mut ex = export::ExportOptions::default();
     let mut long = usize::MAX;
+    let mut look: Option<String> = None;
+    let mut auto = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -47,14 +51,14 @@ fn main() {
                 }));
             }
             "--lut" => s.film = Some(format!("lut:{}", val())),
-            "--camera" => s.camera = pick(&alpha_studio::camera::names(), &val(), "camera"),
+            "--camera" => s.camera = pick(&grainhouse::camera::names(), &val(), "camera"),
             "--camera-strength" => s.camera_strength = val().parse().unwrap_or(1.0),
             "--date-stamp" => s.date_stamp = true,
             "--strength" => s.strength = val().parse().unwrap_or(1.0),
             "--effect" => s.effect = pick(&pipeline::EFFECTS, &val(), "effect"),
             "--target" => s.target = pick(&ai::TARGET_NAMES, &val(), "target"),
             "--model" => s.model = pick(&ai::MODEL_NAMES, &val(), "model"),
-            "--look" => s.look = pick(&fx::ghost::LOOKS, &val(), "look"),
+            "--look" => look = Some(val()),
             "--face" => s.face_style = pick(&fx::mesh::FACE_STYLES, &val(), "face style"),
             "--amount" => s.amount = val().parse().unwrap_or(0.85),
             "--colour" => s.colour = pick(&fx::COLOURS, &val(), "colour"),
@@ -83,6 +87,17 @@ fn main() {
                 }
                 _ => {}
             },
+            "--auto" => auto = true,
+            "--settings" => {
+                let path = val();
+                match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str::<pipeline::Settings>(&t).map_err(|e| e.to_string())) {
+                    Ok(loaded) => s = loaded,
+                    Err(e) => {
+                        eprintln!("cannot read settings {path}: {e}");
+                        std::process::exit(2)
+                    }
+                }
+            }
             "--kelvin" => s.raw.kelvin = val().parse().ok(),
             "--tint" => s.raw.tint = val().parse().unwrap_or(0.0),
             "--shadows" => s.raw.shadows = val().parse().unwrap_or(0.0),
@@ -101,8 +116,14 @@ fn main() {
         }
         i += 1;
     }
+    // the Look names depend on the effect, so they're matched once everything is read
+    if let Some(name) = look {
+        s.look = pick(pipeline::looks(s.effect), &name, "look");
+    } else if s.effect != pipeline::GHOSTS {
+        s.look = 0;
+    }
     if inputs.is_empty() {
-        eprintln!("usage: alpha-cli PHOTO... -o out.jpg [--film NAME] [--effect NAME] ... (--films lists the films)");
+        eprintln!("usage: grainhouse-cli PHOTO... -o out.jpg [--film NAME] [--effect NAME] ... (--films lists the films)");
         std::process::exit(2);
     }
     let t0 = Instant::now();
@@ -113,6 +134,10 @@ fn main() {
             std::process::exit(1)
         }))
         .collect();
+    if auto {
+        s.raw = sessions[0].auto_light(s.raw);
+        eprintln!("auto: exposure {:+.2}, shadows {:+.2}, highlights {:+.2}, whites {:+.2}, blacks {:+.2}", s.raw.exposure, s.raw.shadows, s.raw.highlights, s.raw.whites, s.raw.blacks);
+    }
     let t1 = Instant::now();
     let result = if pipeline::is_multi(s.effect) { pipeline::render_multi(&sessions.iter().collect::<Vec<_>>(), &s, long) } else { sessions[0].render(&s, long) };
     let img = result.unwrap_or_else(|e| {

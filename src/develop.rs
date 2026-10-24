@@ -1,4 +1,4 @@
-//! Film Sim's after-shot develop effects: CineStill-style halation, film grain and light leaks.
+//! After-shot film effects: CineStill-style halation, film grain and light leaks.
 //! Kept subtle on purpose (strong versions looked bad).
 
 use crate::img::{pack_f, unpack, Image};

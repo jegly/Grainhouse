@@ -45,7 +45,7 @@ impl Default for ExportOptions {
             sharpen: 0,
             sharpen_amount: 0.8,
             keep_exif: true,
-            suffix: "_alpha".into(),
+            suffix: "_grainhouse".into(),
             folder: None,
         }
     }
@@ -304,7 +304,7 @@ fn raw_exif(path: &Path) -> Option<Vec<u8>> {
         (0x010F, Tag::Ascii(meta.make.clone())),
         (0x0110, Tag::Ascii(meta.model.clone())),
         (0x0112, Tag::Short(1)),
-        (0x0131, Tag::Ascii(format!("Alpha Studio {}", env!("CARGO_PKG_VERSION")))),
+        (0x0131, Tag::Ascii(format!("Grainhouse {}", env!("CARGO_PKG_VERSION")))),
     ];
     if let Some(d) = e.modify_date.clone().or(e.date_time_original.clone()) {
         ifd0.push((0x0132, Tag::Ascii(d)));

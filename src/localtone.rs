@@ -1,4 +1,4 @@
-//! Shadows and highlights, like Sony's D-Range Optimiser: brightens or darkens by how bright each area is, using
+//! Shadows and highlights, like a camera's dynamic range optimiser: brightens or darkens by how bright each area is, using
 //! an edge-aware blur of the brightness (a guided filter, worked out small and scaled up) so local contrast and
 //! edges stay as they are and there are no halos.
 
