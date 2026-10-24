@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
+ort = "=2.0.0-rc.15"
 rawler = "0.8.0"
 rayon = "1.12.0"
 

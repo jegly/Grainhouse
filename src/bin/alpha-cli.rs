@@ -3,7 +3,7 @@
 //!   alpha-cli a.jpg b.jpg c.jpg -o out.jpg --effect Trails
 //!   alpha-cli --films
 
-use alpha_studio::{ai, develop, film, fx, io, pipeline};
+use alpha_studio::{ai, develop, export, film, fx, pipeline, upscale};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -25,6 +25,7 @@ fn main() {
     let mut s = pipeline::Settings::default();
     let mut inputs = Vec::new();
     let mut out = PathBuf::from("out.jpg");
+    let mut ex = export::ExportOptions::default();
     let mut long = usize::MAX;
     let mut i = 0;
     while i < args.len() {
@@ -58,6 +59,15 @@ fn main() {
             "--leak" => s.develop.light_leak = true,
             "--grain" => s.develop.grain = pick(&develop::GRAIN_NAMES, &val(), "grain"),
             "--exposure" => s.raw.exposure = val().parse().unwrap_or(0.0),
+            "--upscale" => ex.upscale = match val().as_str() { "2x" | "2" => 1, "4x" | "4" => 2, _ => 0 },
+            "--upscaler" => ex.upscale_model = pick(&["fast", "clean", "max"], &val(), "upscaler"),
+            "--sharpen" => ex.sharpen = match val().as_str() { "smart" => 1, "ai" => 2, _ => 0 },
+            "--sharpen-amount" => ex.sharpen_amount = val().parse().unwrap_or(0.8),
+            "--quality" => ex.quality = val().parse().unwrap_or(92),
+            "--long-edge" => {
+                ex.size = 1;
+                ex.long_edge = val().parse().unwrap_or(3000);
+            }
             _ => inputs.push(PathBuf::from(a)),
         }
         i += 1;
@@ -80,8 +90,25 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(1)
     });
+    let est = ex.estimate(img.w, img.h);
+    if est > 1.0 {
+        eprintln!("upscaling with {}: about {:.0} s", upscale::MODELS[ex.upscale_model], est);
+    }
+    let img = export::process(img, &ex, &|p| {
+        eprint!("\r{:3.0}%", p * 100.0);
+        true
+    })
+    .unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1)
+    });
     let t2 = Instant::now();
-    io::save_jpeg(&img, &out, 92).unwrap_or_else(|e| eprintln!("{e}"));
+    ex.format = match out.extension().and_then(|e| e.to_str()).unwrap_or("jpg").to_ascii_lowercase().as_str() {
+        "png" => 1,
+        "tif" | "tiff" => 2,
+        _ => 0,
+    };
+    export::save(&img, &out, &ex, Some(&inputs[0])).unwrap_or_else(|e| eprintln!("{e}"));
     println!(
         "{}x{} -> {}  (open {:.1} s, render {:.1} s, save {:.1} s)",
         img.w,
