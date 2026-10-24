@@ -12,10 +12,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-pub const EFFECTS: [&str; 15] = [
+pub const EFFECTS: [&str; 31] = [
     "None", "Ghosts", "Wireframe", "Contours", "Face mesh", "Points", "Noir pop", "Bokeh", "Rim light", "Glitch", "Thermal", "Comic", "Skeleton",
-    "Crowd remover", "Trails",
+    "Crowd remover", "Trails", "Subject light", "Zoom burst", "Motion pan", "Neon edges", "Pixel sort", "3D anaglyph", "Infrared",
+    "Anamorphic flare", "Light rays", "Tilt-shift", "Duotone", "Oil paint", "Sketch", "Mirror", "VHS", "Double exposure",
 ];
+/// The desktop effects (fx::extra) start here, in fx::extra::NAMES order.
+pub const EXTRA_FIRST: usize = 15;
+pub const DOUBLE: usize = EXTRA_FIRST + fx::extra::DOUBLE;
 pub const NONE: usize = 0;
 pub const GHOSTS: usize = 1;
 pub const WIREFRAME: usize = 2;
@@ -30,10 +34,34 @@ pub const TRAILS: usize = 14;
 
 /// Effects made from several photos (the others work on one).
 pub fn is_multi(effect: usize) -> bool {
-    effect == CROWD || effect == TRAILS
+    effect == CROWD || effect == TRAILS || effect == DOUBLE
 }
 
-#[derive(Clone, PartialEq, Debug)]
+/// How many photos a several-photo effect needs.
+pub fn photos_needed(effect: usize) -> usize {
+    if effect == DOUBLE { 2 } else if is_multi(effect) { 2 } else { 1 }
+}
+
+/// Effects that run an AI model (and so take a moment the first time).
+pub fn needs_model(effect: usize) -> bool {
+    match effect {
+        NONE | CROWD | TRAILS => false,
+        e if e >= EXTRA_FIRST => fx::extra::uses_subjects(e - EXTRA_FIRST),
+        _ => true,
+    }
+}
+
+/// The choices for an effect's Look row (empty = no Look row).
+pub fn looks(effect: usize) -> &'static [&'static str] {
+    match effect {
+        GHOSTS => &fx::ghost::LOOKS,
+        e if e >= EXTRA_FIRST => fx::extra::looks(e - EXTRA_FIRST),
+        _ => &[],
+    }
+}
+
+#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub raw: RawOptions,
     /// Film file name from the library (e.g. "57.bin"), "lut:" + the path of a .cube file, or None.
@@ -58,6 +86,10 @@ pub struct Settings {
     pub camera_strength: f32,
     /// the orange date stamp
     pub date_stamp: bool,
+    /// colour and detail
+    pub adjust: crate::adjust::Adjust,
+    /// frame or border round the picture (frame::NAMES)
+    pub frame: usize,
 }
 
 impl Default for Settings {
@@ -81,6 +113,8 @@ impl Default for Settings {
             camera: 0,
             camera_strength: 1.0,
             date_stamp: false,
+            adjust: crate::adjust::Adjust::default(),
+            frame: 0,
         }
     }
 }
@@ -97,6 +131,8 @@ struct Found {
 pub struct Session {
     pub path: PathBuf,
     raw: Option<RawLinear>,
+    /// a JPEG/PNG/TIFF as loaded (the base is made from it with the light controls)
+    original: Option<Image>,
     base: Mutex<(RawOptions, Image)>,
     cache: Mutex<HashMap<String, Found>>,
     /// when the photo was taken, for the date stamp
@@ -108,15 +144,16 @@ const DETECT_SIZE: usize = 2048;
 
 impl Session {
     pub fn open(path: &Path) -> Result<Session, String> {
-        let (raw, base) = if io::is_raw(path) {
+        let (raw, base, original) = if io::is_raw(path) {
             let raw = io::decode_raw(path)?;
             let img = io::render_raw(&raw, RawOptions::default());
-            (Some(raw), img)
+            (Some(raw), img, None)
         } else {
-            (None, io::load_image(path)?)
+            let img = io::load_image(path)?;
+            (None, img.clone(), Some(img))
         };
         let date = crate::camera::photo_date(path);
-        Ok(Session { path: path.to_path_buf(), raw, base: Mutex::new((RawOptions::default(), base)), cache: Mutex::new(HashMap::new()), date })
+        Ok(Session { path: path.to_path_buf(), raw, original, base: Mutex::new((RawOptions::default(), base)), cache: Mutex::new(HashMap::new()), date })
     }
 
     pub fn is_raw(&self) -> bool {
@@ -131,12 +168,20 @@ impl Session {
     /// The photo developed with these RAW settings (non-RAW photos ignore them).
     pub fn base(&self, raw_opts: RawOptions) -> Image {
         let mut b = self.base.lock().unwrap();
-        if let Some(raw) = &self.raw {
-            if b.0 != raw_opts {
-                *b = (raw_opts, io::render_raw(raw, raw_opts));
-            }
-        }
+        self.develop(&mut b, raw_opts);
         b.1.clone()
+    }
+
+    /// Re-makes the base picture if the light settings changed.
+    fn develop(&self, b: &mut (RawOptions, Image), opts: RawOptions) {
+        if b.0 == opts {
+            return;
+        }
+        if let Some(raw) = &self.raw {
+            *b = (opts, io::render_raw(raw, opts));
+        } else if let Some(o) = &self.original {
+            *b = (opts, io::render_display(o, opts));
+        }
     }
 
     /// Size of the photo as opened (upright, before any crop).
@@ -154,22 +199,18 @@ impl Session {
     /// The developed photo turned, straightened and cropped, long side at most `long`.
     fn shaped(&self, s: &Settings, long: usize) -> Image {
         let mut b = self.base.lock().unwrap();
-        if let Some(raw) = &self.raw {
-            if b.0 != s.raw {
-                *b = (s.raw, io::render_raw(raw, s.raw));
-            }
-        }
+        self.develop(&mut b, s.raw);
         geometry::apply(&b.1, &s.geometry, long)
     }
 
     /// True when rendering with these settings will run the AI models first (the slow part).
     pub fn needs_ai(&self, s: &Settings) -> bool {
-        s.effect != NONE && !is_multi(s.effect) && !self.cache.lock().unwrap().contains_key(&found_key(s))
+        needs_model(s.effect) && (!is_multi(s.effect) || s.effect == DOUBLE) && !self.cache.lock().unwrap().contains_key(&found_key(s))
     }
 
     /// After a render: a note when the effect found nothing to work on, with what to try.
     pub fn nothing_found(&self, s: &Settings) -> Option<String> {
-        if s.effect == NONE || is_multi(s.effect) {
+        if !needs_model(s.effect) || (is_multi(s.effect) && s.effect != DOUBLE) {
             return None;
         }
         let cache = self.cache.lock().unwrap();
@@ -222,7 +263,7 @@ impl Session {
             FACE_MESH => {
                 found.faces = ai::faces(&det, None, 8)?.into_iter().map(to_frac).collect();
             }
-            NONE | CROWD | TRAILS => {}
+            e if !needs_model(e) => {}
             _ => {
                 let subj = ai::subjects(&det, size, s.target)?;
                 if (s.effect == WIREFRAME || s.effect == POINTS) && s.target == 0 {
@@ -240,9 +281,11 @@ impl Session {
         let mut img = self.shaped(s, long);
         crate::camera::colour(&mut img, s.camera, s.camera_strength);
         apply_film(&mut img, s)?;
+        crate::adjust::apply_colour(&mut img, &s.adjust);
+        crate::adjust::apply_detail(&mut img, &s.adjust);
         if s.effect != NONE && !is_multi(s.effect) {
             let found = self.found(s)?;
-            apply_effect(&mut img, s, &found, seed_of(&self.path));
+            apply_effect(&mut img, s, &found, seed_of(&self.path), self.date);
         }
         finish(&mut img, s, seed_of(&self.path), self.date);
         Ok(img)
@@ -260,7 +303,11 @@ fn seed_of(path: &Path) -> u64 {
 
 fn apply_film(img: &mut Image, s: &Settings) -> Result<(), String> {
     let Some(name) = s.film.as_deref() else { return Ok(()) };
-    if let Some(path) = name.strip_prefix("lut:") {
+    if let Some(n) = name.strip_prefix("gen:") {
+        if let Some(l) = n.parse().ok().and_then(crate::creative::get) {
+            l.apply(&mut img.px, s.strength);
+        }
+    } else if let Some(path) = name.strip_prefix("lut:") {
         crate::lut::load(Path::new(path))?.apply(&mut img.px, s.strength);
     } else if let Some(look) = film::load(name) {
         film::Applied::new(&look, s.strength).apply(&mut img.px);
@@ -276,6 +323,7 @@ fn finish(img: &mut Image, s: &Settings, seed: u64, date: Option<(i32, u32, u32)
         let preview = img.resized(dw, dh);
         fx::run(&Diffusion::new(&preview.px, dw, dh, s.diffusion, &s.diffusion_opt), img);
     }
+    crate::adjust::apply_vignette(img, s.adjust.vignette);
     if s.date_stamp {
         if let Some(date) = date {
             crate::camera::date_stamp(img, date);
@@ -284,6 +332,17 @@ fn finish(img: &mut Image, s: &Settings, seed: u64, date: Option<(i32, u32, u32)
     let mut d = s.develop;
     d.seed = seed;
     develop(img, &d);
+    if s.frame > 0 {
+        let label = edge_label(s);
+        *img = crate::frame::apply(std::mem::replace(img, Image::new(1, 1)), s.frame, seed, &label);
+    }
+}
+
+/// What a 35 mm strip's edge says: the film's name if one is chosen.
+fn edge_label(s: &Settings) -> String {
+    let name = s.film.as_deref().and_then(|f| film::films().into_iter().find(|x| x.file == f).map(|x| x.name.to_string()));
+    let name = name.unwrap_or_else(|| "ALPHA 400".to_string()).to_uppercase();
+    name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == ' ').take(18).collect()
 }
 
 fn scaled(img: &Image, long: usize) -> (usize, usize) {
@@ -291,7 +350,12 @@ fn scaled(img: &Image, long: usize) -> (usize, usize) {
     (((img.w as f32 * k).round() as usize).max(2), ((img.h as f32 * k).round() as usize).max(2))
 }
 
-fn apply_effect(img: &mut Image, s: &Settings, found: &Found, seed: u64) {
+fn apply_effect(img: &mut Image, s: &Settings, found: &Found, seed: u64, date: Option<(i32, u32, u32)>) {
+    if s.effect >= EXTRA_FIRST {
+        let mask = found.subjects.as_ref().filter(|x| x.count > 0).map(|x| fx::extra::Mask::new(&x.mask, x.mw, x.mh));
+        fx::extra::apply(s.effect - EXTRA_FIRST, img, mask.as_ref(), s.look, s.amount, s.colour, seed, date);
+        return;
+    }
     let edges = ai::mesh_edges();
     match s.effect {
         SKELETON => {
@@ -346,10 +410,22 @@ fn to_px(frac: &[f32], mw: usize, mh: usize) -> Vec<f32> {
 /// Crowd remover / Trails over several photos (oldest first), then the film look and finishing.
 pub fn render_multi(sessions: &[&Session], s: &Settings, long: usize) -> Result<Image, String> {
     let frames: Vec<Image> = sessions.iter().map(|x| x.shaped(s, long)).collect();
-    let kind = if s.effect == TRAILS { fx::multishot::TRAILS } else { fx::multishot::CROWD };
-    let mut img = fx::multishot::combine(&frames, kind, s.amount, s.colour)?;
+    let mut img = if s.effect == DOUBLE {
+        if frames.len() < 2 {
+            return Err("Double exposure needs two photos: a portrait first, then the photo to fill it with".into());
+        }
+        let found = sessions[0].found(s)?;
+        let subj = found.subjects.filter(|x| x.count > 0).ok_or("Double exposure found nobody in the first photo")?;
+        let mask = fx::extra::Mask::new(&subj.mask, subj.mw, subj.mh);
+        fx::extra::double_exposure(&frames[0], &frames[1], &mask, s.look, s.amount)
+    } else {
+        let kind = if s.effect == TRAILS { fx::multishot::TRAILS } else { fx::multishot::CROWD };
+        fx::multishot::combine(&frames, kind, s.amount, s.colour)?
+    };
     crate::camera::colour(&mut img, s.camera, s.camera_strength);
     apply_film(&mut img, s)?;
+    crate::adjust::apply_colour(&mut img, &s.adjust);
+    crate::adjust::apply_detail(&mut img, &s.adjust);
     finish(&mut img, s, sessions.first().map(|x| seed_of(&x.path)).unwrap_or(1), sessions.first().and_then(|x| x.date));
     Ok(img)
 }

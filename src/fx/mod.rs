@@ -4,6 +4,7 @@
 pub mod contours;
 pub mod delaunay;
 pub mod diffusion;
+pub mod extra;
 pub mod ghost;
 pub mod mesh;
 pub mod multishot;

@@ -10,8 +10,11 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 
-/// How RAW files are turned into a picture: white balance, exposure, shadows and highlights, and contrast.
-#[derive(Clone, Copy, PartialEq, Debug)]
+/// Light: white balance, exposure, shadows and highlights, whites and blacks, contrast. For RAW files this is how
+/// the RAW is developed; JPEGs get the same controls on their pixels (and are left exactly as they are at the
+/// defaults).
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct RawOptions {
     /// Exposure change in stops.
     pub exposure: f32,
@@ -25,11 +28,15 @@ pub struct RawOptions {
     pub shadows: f32,
     /// -1 recovered .. 1 brighter
     pub highlights: f32,
+    /// -1 .. 1, moves the white point (levels)
+    pub whites: f32,
+    /// -1 crushed .. 1 lifted, moves the black point (levels)
+    pub blacks: f32,
 }
 
 impl Default for RawOptions {
     fn default() -> Self {
-        RawOptions { exposure: 0.0, contrast: 1.0, kelvin: None, tint: 0.0, shadows: 0.0, highlights: 0.0 }
+        RawOptions { exposure: 0.0, contrast: 1.0, kelvin: None, tint: 0.0, shadows: 0.0, highlights: 0.0, whites: 0.0, blacks: 0.0 }
     }
 }
 
@@ -107,7 +114,11 @@ pub fn render_raw(raw: &RawLinear, opt: RawOptions) -> Image {
             let c = (g + 0.55 * (g * g * (3.0 - 2.0 * g) - g)).clamp(0.0, 1.0) * 255.0;
             // contrast blends from this neutral develop to the camera's look
             let cam = CAMERA_CURVE[(c + 0.5) as usize] as f32;
-            (c + (cam - c) * opt.contrast).clamp(0.0, 255.0).round() as u8
+            // past 100%, more of the same S-curve
+            let extra = (opt.contrast - 1.0).max(0.0);
+            let k = (c + (cam - c) * opt.contrast.min(1.0)) / 255.0;
+            let k = k + extra * 0.55 * (k * k * (3.0 - 2.0 * k) - k);
+            (levels(k, opt.whites, opt.blacks) * 255.0).clamp(0.0, 255.0).round() as u8
         })
         .collect();
     let look = |v: f32| -> u8 {
@@ -142,6 +153,65 @@ pub fn render_raw(raw: &RawLinear, opt: RawOptions) -> Image {
         *p = crate::img::pack_f(l + (r - l) * sat, l + (g - l) * sat, l + (b - l) * sat);
     });
     orient(img, raw.orientation)
+}
+
+/// Whites and blacks: moves the white and black points, -1..1 each.
+fn levels(y: f32, whites: f32, blacks: f32) -> f32 {
+    if whites == 0.0 && blacks == 0.0 {
+        return y;
+    }
+    let b = -blacks * 0.06;
+    let w = 1.0 - whites * 0.08;
+    ((y - b) / (w - b)).clamp(0.0, 1.0)
+}
+
+/// A JPEG (or PNG, TIFF) with the light controls applied: white balance relative to its own (6500 K = as it is),
+/// exposure, shadows and highlights in linear light, then contrast (1 = unchanged) and whites/blacks.
+pub fn render_display(img: &Image, opt: RawOptions) -> Image {
+    let neutral = RawOptions { contrast: 1.0, ..RawOptions::default() };
+    if opt == neutral {
+        return img.clone();
+    }
+    let lin: Vec<f32> = (0..256)
+        .map(|i| {
+            let x = i as f32 / 255.0;
+            if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) }
+        })
+        .collect();
+    const N: usize = 4096;
+    let s = opt.contrast - 1.0;
+    let out: Vec<u8> = (0..=N)
+        .map(|i| {
+            let g = srgb_gamma(i as f32 / N as f32);
+            let g = g + s * 0.55 * (g * g * (3.0 - 2.0 * g) - g);
+            (levels(g.clamp(0.0, 1.0), opt.whites, opt.blacks) * 255.0).round() as u8
+        })
+        .collect();
+    let gain = 2f32.powf(opt.exposure);
+    let d65 = (0.3127, 0.3290);
+    let wb = match opt.kelvin {
+        Some(k) => Some(crate::whitebalance::correction(d65, k, opt.tint)),
+        None if opt.tint != 0.0 => Some(crate::whitebalance::correction(d65, crate::whitebalance::kelvin_of(d65), opt.tint)),
+        None => None,
+    };
+    let pixel = |i: usize| -> [f32; 3] {
+        let p = img.px[i];
+        let c = [lin[((p >> 16) & 255) as usize], lin[((p >> 8) & 255) as usize], lin[(p & 255) as usize]];
+        match &wb {
+            Some(m) => crate::whitebalance::apply(m, c),
+            None => c,
+        }
+    };
+    let local = crate::localtone::LocalTone::new(img.w, img.h, gain, opt.shadows, opt.highlights, &pixel);
+    let mut res = Image::new(img.w, img.h);
+    res.px.par_iter_mut().enumerate().for_each(|(i, p)| {
+        let mut c = pixel(i);
+        let k = gain * local.as_ref().map_or(1.0, |l| l.gain(i % img.w, i / img.w, c));
+        c = c.map(|v| v * k);
+        let e = |v: f32| out[((v.clamp(0.0, 1.0) * N as f32) + 0.5) as usize] as u32;
+        *p = (e(c[0]) << 16) | (e(c[1]) << 8) | e(c[2]);
+    });
+    res
 }
 
 fn shoulder(v: f32) -> f32 {

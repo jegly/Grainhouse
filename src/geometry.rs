@@ -4,7 +4,8 @@
 use crate::img::Image;
 use rayon::prelude::*;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Geometry {
     /// quarter turns clockwise, 0..3
     pub quarter: u8,

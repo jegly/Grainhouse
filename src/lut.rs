@@ -118,6 +118,20 @@ pub fn parse(text: &str) -> Result<Lut, String> {
 }
 
 impl Lut {
+    /// A 3D LUT made from a colour function (sRGB 0..1 in and out), `n` points per side.
+    pub fn from_fn(n: usize, f: impl Fn([f32; 3]) -> [f32; 3] + Sync) -> Lut {
+        let n = n.max(2);
+        let data: Vec<[f32; 3]> = (0..n * n * n)
+            .into_par_iter()
+            .map(|i| {
+                let (r, g, b) = (i % n, (i / n) % n, i / (n * n));
+                let k = (n - 1) as f32;
+                f([r as f32 / k, g as f32 / k, b as f32 / k])
+            })
+            .collect();
+        Lut { n, three_d: true, data, min: [0.0; 3], max: [1.0; 3] }
+    }
+
     /// Applies the LUT to packed RGB pixels, mixed with the original by `strength` (0..1).
     pub fn apply(&self, px: &mut [u32], strength: f32) {
         let k = strength.clamp(0.0, 1.0);

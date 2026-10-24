@@ -68,7 +68,8 @@ fn weight(black_mist: bool, linear_max: f32) -> f32 {
 }
 
 /// Fine control on top of the chosen filter. All 1.0 (warmth 0) is the filter as designed.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct DiffusionOptions {
     /// how much light is scattered, 0..2
     pub strength: f32,

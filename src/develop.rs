@@ -7,7 +7,8 @@ use rayon::prelude::*;
 
 pub const GRAIN_NAMES: [&str; 5] = ["Off", "Fine", "Medium", "Heavy", "Coarse"];
 
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct DevelopOptions {
     pub halation: bool,
     /// 0 off, 1 fine, 2 medium, 3 heavy, 4 coarse
