@@ -167,6 +167,33 @@ impl Session {
         s.effect != NONE && !is_multi(s.effect) && !self.cache.lock().unwrap().contains_key(&found_key(s))
     }
 
+    /// After a render: a note when the effect found nothing to work on, with what to try.
+    pub fn nothing_found(&self, s: &Settings) -> Option<String> {
+        if s.effect == NONE || is_multi(s.effect) {
+            return None;
+        }
+        let cache = self.cache.lock().unwrap();
+        let f = cache.get(&found_key(s))?;
+        let empty = match s.effect {
+            SKELETON => f.poses.is_empty(),
+            FACE_MESH => f.faces.is_empty(),
+            _ => f.subjects.as_ref().is_none_or(|x| x.count == 0),
+        };
+        if !empty {
+            return None;
+        }
+        let bigger = if s.model < 2 { " Try AI model Fine." } else { "" };
+        Some(match s.effect {
+            SKELETON => format!("Skeleton found no people.{bigger}"),
+            FACE_MESH => "Face mesh found no faces. They need to be fairly big in the picture and facing the camera.".to_string(),
+            _ => {
+                let what = ai::TARGET_NAMES[s.target.min(ai::TARGET_NAMES.len() - 1)].to_lowercase();
+                let other = if s.target == ai::TARGET_NAMES.len() - 1 { "" } else { " Or set Target to Everything." };
+                format!("{} found no {what}.{bigger}{other}", EFFECTS[s.effect])
+            }
+        })
+    }
+
     /// The models' results for these settings, from the cache or by running them.
     fn found(&self, s: &Settings) -> Result<Found, String> {
         let key = found_key(s);

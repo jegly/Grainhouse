@@ -32,7 +32,7 @@ enum Job {
 
 enum Done {
     Opened(Vec<Arc<Session>>, Vec<String>),
-    Rendered { seq: u64, result: Result<Image, String>, ms: u128 },
+    Rendered { seq: u64, result: Result<Image, String>, ms: u128, note: Option<String> },
 }
 
 struct Ui {
@@ -108,6 +108,8 @@ struct App {
     /// whether the newest render request / the picture on screen is the whole uncropped frame
     frame_requested: Cell<bool>,
     frame_shown: Cell<bool>,
+    /// the last "found nothing" note shown
+    last_note: RefCell<Option<String>>,
 }
 
 fn combo(title: &str, items: &[&str], selected: usize) -> adw::ComboRow {
@@ -573,11 +575,18 @@ impl App {
         let _ = cr.stroke();
     }
 
-    fn rendered(&self, seq: u64, result: Result<Image, String>, ms: u128) {
+    fn rendered(&self, seq: u64, result: Result<Image, String>, ms: u128, note: Option<String>) {
         if seq != self.seq.get() {
             return; // a newer render is on its way
         }
         self.set_busy(None);
+        // say once when an effect finds nothing (not again on every slider move)
+        if note != *self.last_note.borrow() {
+            if let Some(n) = &note {
+                self.toast(n);
+            }
+            *self.last_note.borrow_mut() = note;
+        }
         match result {
             Ok(img) => {
                 self.ui.picture.set_paintable(Some(&texture(&img)));
@@ -624,13 +633,15 @@ fn worker(jobs: async_channel::Receiver<Job>, done: async_channel::Sender<Done>)
                 Job::Open(_) => run_open(job),
                 Job::Render { seq, sessions, current, settings } => {
                     let t0 = Instant::now();
+                    let shown = &sessions[current.min(sessions.len() - 1)];
                     let result = if pipeline::is_multi(settings.effect) {
                         let refs: Vec<&Session> = sessions.iter().map(|s| s.as_ref()).collect();
                         pipeline::render_multi(&refs, &settings, PREVIEW)
                     } else {
-                        sessions[current.min(sessions.len() - 1)].render(&settings, PREVIEW)
+                        shown.render(&settings, PREVIEW)
                     };
-                    Done::Rendered { seq, result, ms: t0.elapsed().as_millis() }
+                    let note = if result.is_ok() { shown.nothing_found(&settings) } else { None };
+                    Done::Rendered { seq, result, ms: t0.elapsed().as_millis(), note }
                 }
             };
             if done.send_blocking(out).is_err() {
@@ -902,6 +913,7 @@ fn build(app: &adw::Application) {
         drag: RefCell::new(None),
         frame_requested: Cell::new(false),
         frame_shown: Cell::new(false),
+        last_note: RefCell::new(None),
     });
     app.update_rows();
 
@@ -1200,7 +1212,7 @@ fn build(app: &adw::Application) {
             while let Ok(msg) = done_rx.recv().await {
                 match msg {
                     Done::Opened(s, errors) => a.opened(s, errors),
-                    Done::Rendered { seq, result, ms } => a.rendered(seq, result, ms),
+                    Done::Rendered { seq, result, ms, note } => a.rendered(seq, result, ms, note),
                 }
             }
         });

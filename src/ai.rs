@@ -7,7 +7,9 @@ use crate::facemesh::{self, MeshEdges};
 use crate::img::Image;
 use std::sync::{Mutex, OnceLock};
 
-pub const MODEL_SIZES: [usize; 3] = [320, 480, 640];
+/// Model input sizes (long side). Bigger than on the camera: a computer can afford it, and small or half-hidden
+/// people are missed at 480.
+pub const MODEL_SIZES: [usize; 3] = [480, 640, 1024];
 pub const MODEL_NAMES: [&str; 3] = ["Fast", "Normal", "Fine"];
 
 pub const TARGET_NAMES: [&str; 5] = ["People", "Vehicles", "Animals", "People + animals", "Everything"];
