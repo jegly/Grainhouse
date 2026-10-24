@@ -32,8 +32,6 @@ Everything runs on your own computer. No account, no cloud, no subscription.
 - **Develop**: CineStill-style halation, film grain and light leaks
 - **Frames**: thin or gallery white border, black border, Polaroid, Instax, a 35mm film strip with sprocket holes and edge printing, a 6x6 negative, and cinema bars
 
-![Creative looks](docs/looks.jpg)
-
 ### AI effects
 
 The effects find the people (or vehicles, animals, anything) in your photo with a YOLO model running on your computer, then work around them.
@@ -57,8 +55,6 @@ The effects find the people (or vehicles, animals, anything) in your photo with 
 | Double exposure | Drop in two photos: the people in the first are filled with the second |
 
 The first time an effect runs it takes a second or two to find people, then changes are quick. If it can't find anyone it says so and suggests what to try.
-
-![Some of the effects](docs/effects.jpg)
 
 ### Export
 
