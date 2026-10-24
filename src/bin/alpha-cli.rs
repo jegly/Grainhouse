@@ -1,6 +1,7 @@
 //! Command-line use of Alpha Studio, mainly for testing:
 //!   alpha-cli photo.ARW -o out.jpg --film "Portra 400" --effect Ghosts --look Dreamy --diffusion "White Mist 1/2"
 //!   alpha-cli a.jpg b.jpg c.jpg -o out.jpg --effect Trails
+//!   alpha-cli photo.ARW -o out.jpg --rotate cw --straighten 2.5 --crop 0.1,0.1,0.8,0.8 (fractions x,y,w,h)
 //!   alpha-cli --films
 
 use alpha_studio::{ai, develop, export, film, fx, pipeline, upscale};
@@ -58,6 +59,26 @@ fn main() {
             "--halation" => s.develop.halation = true,
             "--leak" => s.develop.light_leak = true,
             "--grain" => s.develop.grain = pick(&develop::GRAIN_NAMES, &val(), "grain"),
+            "--diffusion-strength" => s.diffusion_opt.strength = val().parse().unwrap_or(1.0),
+            "--diffusion-size" => s.diffusion_opt.size = val().parse().unwrap_or(1.0),
+            "--bloom" => s.diffusion_opt.bloom = val().parse().unwrap_or(1.0),
+            "--warmth" => s.diffusion_opt.warmth = val().parse().unwrap_or(0.0),
+            "--crop" => {
+                let v: Vec<f32> = val().split(',').filter_map(|x| x.parse().ok()).collect();
+                if v.len() == 4 {
+                    (s.geometry.x, s.geometry.y, s.geometry.w, s.geometry.h) = (v[0], v[1], v[2], v[3]);
+                }
+            }
+            "--straighten" => s.geometry.angle = val().parse().unwrap_or(0.0),
+            "--rotate" => match val().as_str() {
+                "cw" | "90" => s.geometry.turn(true),
+                "ccw" | "-90" | "270" => s.geometry.turn(false),
+                "180" => {
+                    s.geometry.turn(true);
+                    s.geometry.turn(true);
+                }
+                _ => {}
+            },
             "--exposure" => s.raw.exposure = val().parse().unwrap_or(0.0),
             "--upscale" => ex.upscale = match val().as_str() { "2x" | "2" => 1, "4x" | "4" => 2, _ => 0 },
             "--upscaler" => ex.upscale_model = pick(&["fast", "clean", "max"], &val(), "upscaler"),

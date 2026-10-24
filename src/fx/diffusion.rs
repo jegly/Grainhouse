@@ -67,6 +67,25 @@ fn weight(black_mist: bool, linear_max: f32) -> f32 {
     }
 }
 
+/// Fine control on top of the chosen filter. All 1.0 (warmth 0) is the filter as designed.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct DiffusionOptions {
+    /// how much light is scattered, 0..2
+    pub strength: f32,
+    /// how far the glow spreads, 0.25..3
+    pub size: f32,
+    /// extra glow from clipped highlights (lamps, sun on water), 0..3
+    pub bloom: f32,
+    /// glow colour, -1 cool .. 1 warm
+    pub warmth: f32,
+}
+
+impl Default for DiffusionOptions {
+    fn default() -> Self {
+        DiffusionOptions { strength: 1.0, size: 1.0, bloom: 1.0, warmth: 0.0 }
+    }
+}
+
 pub struct Diffusion {
     mw: usize,
     mh: usize,
@@ -76,9 +95,13 @@ pub struct Diffusion {
 
 impl Diffusion {
     /// `preview` is the photo at mw x mh, packed RGB.
-    pub fn new(preview: &[u32], mw: usize, mh: usize, setting: usize) -> Diffusion {
+    pub fn new(preview: &[u32], mw: usize, mh: usize, setting: usize, opt: &DiffusionOptions) -> Diffusion {
         let p = SETTINGS[setting.min(SETTINGS.len() - 1)];
-        let (near, far, black) = (p[0], p[2], p[4] > 0.0);
+        let black = p[4] > 0.0;
+        // past about 60% scattered the picture falls apart, so stronger settings stop there
+        let base = (p[0] + p[2]).max(1e-6);
+        let k = opt.strength.max(0.0).min(base.max(0.6) / base);
+        let (near, far) = (p[0] * k, p[2] * k);
         let share = near + far;
         let lin = to_linear();
         let mut keep_for = [0f32; 256];
@@ -92,19 +115,26 @@ impl Diffusion {
             let l = [lin[((c >> 16) & 255) as usize], lin[((c >> 8) & 255) as usize], lin[(c & 255) as usize]];
             let mx = l[0].max(l[1]).max(l[2]);
             // clipped highlights were brighter than the file can say: give them more light to scatter
-            let k = (1.0 + 3.0 * smooth(0.75, 1.0, mx)) * weight(black, mx);
+            let k = (1.0 + 3.0 * opt.bloom.max(0.0) * smooth(0.75, 1.0, mx)) * weight(black, mx);
             for c in 0..3 {
                 ch[c][i] = l[c] * k;
             }
         }
-        let rn = ((p[1] * mw as f32).round() as usize).max(1);
-        let rf = ((p[3] * mw as f32).round() as usize).max(1);
+        let size = opt.size.clamp(0.1, 4.0);
+        let rn = ((p[1] * size * mw as f32).round() as usize).max(1);
+        let rf = ((p[3] * size * mw as f32).round() as usize).max(1);
+        // warm glow: more red, less blue (and the reverse), keeping its brightness about the same
+        let w = opt.warmth.clamp(-1.0, 1.0) * 0.35;
+        let tint = [1.0 + w, 1.0 - 0.1 * w.abs(), 1.0 - w];
+        let mut c = 0;
         let glow = ch.map(|src| {
             let mut a = src.clone();
             let mut b = src;
             gaussian(&mut a, mw, mh, rn);
             gaussian(&mut b, mw, mh, rf);
-            a.iter().zip(&b).map(|(x, y)| x * near + y * far).collect()
+            let t = tint[c];
+            c += 1;
+            a.iter().zip(&b).map(|(x, y)| (x * near + y * far) * t).collect()
         });
         Diffusion { mw, mh, keep_for, glow }
     }

@@ -6,6 +6,7 @@ use alpha_studio::{
     ai, develop, export,
     export::ExportOptions,
     film, fx,
+    geometry::{self, Geometry, Grab, Rect},
     img::Image,
     pipeline::{self, Session, Settings},
     upscale,
@@ -19,6 +20,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 const PREVIEW: usize = 1800;
+
+const ASPECTS: [&str; 8] = ["Free", "Original", "1:1", "3:2", "4:3", "5:4", "16:9", "65:24 (XPan)"];
+const RATIOS: [f32; 8] = [0.0, 0.0, 1.0, 1.5, 4.0 / 3.0, 1.25, 16.0 / 9.0, 65.0 / 24.0];
 
 enum Job {
     Open(Vec<PathBuf>),
@@ -35,7 +39,10 @@ struct Ui {
     toasts: adw::ToastOverlay,
     picture: gtk::Picture,
     empty: adw::StatusPage,
-    spinner: gtk::Spinner,
+    /// the "working" box over the photo, with what's happening
+    status: gtk::Box,
+    status_title: gtk::Label,
+    status_sub: gtk::Label,
     info: gtk::Label,
     strip: gtk::Box,
     strip_scroll: gtk::ScrolledWindow,
@@ -56,6 +63,16 @@ struct Ui {
     colour: adw::ComboRow,
     glow: adw::ComboRow,
     diffusion: adw::ComboRow,
+    diff_strength: adw::SpinRow,
+    diff_size: adw::SpinRow,
+    bloom: adw::SpinRow,
+    warmth: adw::SpinRow,
+    crop_button: gtk::ToggleButton,
+    crop_group: adw::PreferencesGroup,
+    aspect: adw::ComboRow,
+    straighten: adw::SpinRow,
+    /// draws the crop frame over the photo and takes the drags
+    crop_area: gtk::DrawingArea,
     halation: adw::SwitchRow,
     grain: adw::ComboRow,
     leak: adw::SwitchRow,
@@ -68,21 +85,31 @@ struct App {
     sessions: RefCell<Vec<Arc<Session>>>,
     current: Cell<usize>,
     seq: Cell<u64>,
-    busy: Cell<bool>,
+    /// bumped on every busy change, so a delayed "show the status box" knows if it's still wanted
+    busy_token: Rc<Cell<u64>>,
     /// films in the current brand, as shown in the Film row
     brand_films: RefCell<Vec<&'static str>>,
     updating: Cell<bool>,
     export_opts: RefCell<ExportOptions>,
+    geometry: RefCell<Geometry>,
+    /// crop shape turned to portrait
+    portrait: Cell<bool>,
+    /// the crop drag in progress: what was grabbed and the crop when it started
+    drag: RefCell<Option<(Grab, Rect)>>,
+    /// whether the newest render request / the picture on screen is the whole uncropped frame
+    frame_requested: Cell<bool>,
+    frame_shown: Cell<bool>,
 }
 
 fn combo(title: &str, items: &[&str], selected: usize) -> adw::ComboRow {
-    let row = adw::ComboRow::builder().title(title).model(&gtk::StringList::new(items)).build();
+    let row = adw::ComboRow::builder().title(title).use_markup(false).model(&gtk::StringList::new(items)).build();
     row.set_selected(selected as u32);
     row
 }
 
 fn spin(title: &str, min: f64, max: f64, step: f64, value: f64, digits: u32) -> adw::SpinRow {
     let row = adw::SpinRow::with_range(min, max, step);
+    row.set_use_markup(false);
     row.set_title(title);
     row.set_digits(digits);
     row.set_value(value);
@@ -90,7 +117,7 @@ fn spin(title: &str, min: f64, max: f64, step: f64, value: f64, digits: u32) -> 
 }
 
 fn switch(title: &str, subtitle: &str) -> adw::SwitchRow {
-    adw::SwitchRow::builder().title(title).subtitle(subtitle).build()
+    adw::SwitchRow::builder().title(title).subtitle(subtitle).use_markup(false).build()
 }
 
 fn texture(img: &Image) -> gdk::MemoryTexture {
@@ -116,6 +143,11 @@ impl App {
         s.colour = u.colour.selected() as usize;
         s.glow = u.glow.selected() as usize;
         s.diffusion = u.diffusion.selected() as usize;
+        s.diffusion_opt.strength = (u.diff_strength.value() / 100.0) as f32;
+        s.diffusion_opt.size = (u.diff_size.value() / 100.0) as f32;
+        s.diffusion_opt.bloom = (u.bloom.value() / 100.0) as f32;
+        s.diffusion_opt.warmth = (u.warmth.value() / 100.0) as f32;
+        s.geometry = *self.geometry.borrow();
         s.develop.halation = u.halation.is_active();
         s.develop.grain = u.grain.selected() as usize;
         s.develop.light_leak = u.leak.is_active();
@@ -145,6 +177,10 @@ impl App {
             || e == pipeline::SCENE_FIRST + fx::scene::COMIC;
         u.colour.set_visible(lit);
         u.glow.set_visible(matches!(e, pipeline::GHOSTS | pipeline::WIREFRAME | pipeline::CONTOURS | pipeline::FACE_MESH | pipeline::SKELETON));
+        let diffusing = u.diffusion.selected() != 0;
+        for r in [&u.diff_strength, &u.diff_size, &u.bloom, &u.warmth] {
+            r.set_visible(diffusing);
+        }
         u.film.set_sensitive(u.brand.selected() != 0);
         u.strength.set_sensitive(u.brand.selected() != 0);
     }
@@ -180,18 +216,50 @@ impl App {
         self.seq.set(seq);
         let mut settings = self.settings();
         if self.ui.before.is_active() {
-            let raw = settings.raw;
+            let (raw, geometry) = (settings.raw, settings.geometry);
             settings = Settings::default();
             settings.raw = raw;
+            settings.geometry = geometry;
         }
-        self.set_busy(true);
+        // while cropping: the whole frame, and no effect (they can be slow and would run again for each change)
+        let cropping = self.cropping();
+        if cropping {
+            settings.geometry = settings.geometry.uncropped();
+            settings.effect = pipeline::NONE;
+        }
+        self.frame_requested.set(cropping);
+        let shown = &sessions[self.current.get().min(sessions.len() - 1)];
+        let (title, sub) = if pipeline::is_multi(settings.effect) {
+            (format!("Combining {} photos", sessions.len()), String::new())
+        } else if shown.needs_ai(&settings) {
+            (ai_message(&settings), "The AI runs once, then changes are quick".to_string())
+        } else {
+            ("Updating".to_string(), String::new())
+        };
+        self.set_busy(Some((title, sub)));
         let _ = self.jobs.send_blocking(Job::Render { seq, sessions, current: self.current.get(), settings });
     }
 
-    fn set_busy(&self, b: bool) {
-        self.busy.set(b);
-        self.ui.spinner.set_spinning(b);
-        self.ui.spinner.set_visible(b);
+    /// Shows what's being worked on (None = done). The box appears only if the work takes over a quarter second.
+    fn set_busy(&self, what: Option<(String, String)>) {
+        let token = self.busy_token.get() + 1;
+        self.busy_token.set(token);
+        let u = &self.ui;
+        let Some((title, sub)) = what else {
+            u.status.set_visible(false);
+            u.picture.set_opacity(1.0);
+            return;
+        };
+        u.status_title.set_text(&title);
+        u.status_sub.set_text(&sub);
+        u.status_sub.set_visible(!sub.is_empty());
+        let (status, picture, current) = (u.status.clone(), u.picture.clone(), self.busy_token.clone());
+        glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+            if current.get() == token {
+                status.set_visible(true);
+                picture.set_opacity(0.55);
+            }
+        });
     }
 
     fn open(&self, paths: Vec<PathBuf>) {
@@ -199,7 +267,10 @@ impl App {
         if paths.is_empty() {
             return;
         }
-        self.set_busy(true);
+        let first = paths[0].file_name().and_then(|n| n.to_str()).unwrap_or("photo").to_string();
+        let title = if paths.len() == 1 { format!("Opening {first}") } else { format!("Opening {} photos", paths.len()) };
+        let sub = if paths.iter().any(|p| alpha_studio::io::is_raw(p)) { "Developing the RAW" } else { "" };
+        self.set_busy(Some((title, sub.to_string())));
         self.ui.info.set_text(&format!("Opening {} photo{}...", paths.len(), if paths.len() == 1 { "" } else { "s" }));
         let _ = self.jobs.send_blocking(Job::Open(paths));
     }
@@ -213,7 +284,7 @@ impl App {
             self.toast(e);
         }
         if sessions.is_empty() {
-            self.set_busy(false);
+            self.set_busy(None);
             return;
         }
         *self.sessions.borrow_mut() = sessions;
@@ -222,6 +293,9 @@ impl App {
         self.ui.export_button.set_sensitive(true);
         let raw = self.sessions.borrow()[0].is_raw();
         self.ui.raw_group.set_visible(raw);
+        self.ui.crop_group.set_visible(true);
+        self.reset_crop();
+        self.ui.crop_button.set_sensitive(true);
         self.rebuild_strip();
         self.request_render();
     }
@@ -251,17 +325,156 @@ impl App {
         }
     }
 
+    fn cropping(&self) -> bool {
+        self.ui.crop_button.is_active()
+    }
+
+    /// Size of the turned and straightened frame of the photo on screen.
+    fn frame(&self) -> (f32, f32) {
+        let sessions = self.sessions.borrow();
+        let Some(s) = sessions.get(self.current.get()) else { return (1.0, 1.0) };
+        let (w, h) = s.size();
+        self.geometry.borrow().frame(w, h)
+    }
+
+    /// The chosen crop shape as width / height in frame fractions (None = free).
+    fn shape(&self) -> Option<f32> {
+        let i = (self.ui.aspect.selected() as usize).min(RATIOS.len() - 1);
+        if i == 0 {
+            return None;
+        }
+        let (fw, fh) = self.frame();
+        let r = if i == 1 { fw.max(fh) / fw.min(fh) } else { RATIOS[i] };
+        let r = if self.portrait.get() { 1.0 / r } else { r };
+        Some(r * fh / fw)
+    }
+
+    /// Makes the crop the chosen shape (as big as fits, around where it was).
+    fn apply_shape(&self) {
+        if let Some(k) = self.shape() {
+            let mut g = self.geometry.borrow_mut();
+            let r = geometry::fit_shape(g.rect(), k);
+            g.set_rect(r);
+        }
+        self.ui.crop_area.queue_draw();
+    }
+
+    fn reset_crop(&self) {
+        self.updating.set(true);
+        self.ui.aspect.set_selected(0);
+        self.ui.straighten.set_value(0.0);
+        self.ui.crop_button.set_active(false);
+        self.updating.set(false);
+        *self.geometry.borrow_mut() = Geometry::default();
+        self.portrait.set(false);
+    }
+
+    /// Starts cropping if not already (which re-renders), otherwise just re-renders.
+    fn crop_changed(&self) {
+        if self.cropping() {
+            self.request_render();
+        } else {
+            self.ui.crop_button.set_active(true);
+        }
+    }
+
+    /// Where the picture sits in the photo area, as (x, y, w, h) in pixels.
+    fn shown_rect(&self) -> Option<(f64, f64, f64, f64)> {
+        let p = self.ui.picture.paintable()?;
+        let (iw, ih) = (p.intrinsic_width() as f64, p.intrinsic_height() as f64);
+        let (ww, wh) = (self.ui.crop_area.width() as f64, self.ui.crop_area.height() as f64);
+        if iw <= 0.0 || ih <= 0.0 || ww <= 0.0 || wh <= 0.0 {
+            return None;
+        }
+        let k = (ww / iw).min(wh / ih);
+        Some(((ww - iw * k) / 2.0, (wh - ih * k) / 2.0, iw * k, ih * k))
+    }
+
+    /// What a press at (px, py) grabs: a corner, an edge, the inside (move) or outside (draw a new crop).
+    fn grab_at(&self, px: f64, py: f64) -> Option<(Grab, Rect, &'static str)> {
+        let (ox, oy, dw, dh) = self.shown_rect()?;
+        let r = self.geometry.borrow().rect();
+        let (x0, y0) = (ox + r.x as f64 * dw, oy + r.y as f64 * dh);
+        let (x1, y1) = (x0 + r.w as f64 * dw, y0 + r.h as f64 * dh);
+        let edges = |reach: f64| {
+            let left = (px - x0).abs() <= reach && (px - x0).abs() <= (px - x1).abs();
+            let right = (px - x1).abs() <= reach && !left;
+            let top = (py - y0).abs() <= reach && (py - y0).abs() <= (py - y1).abs();
+            let bottom = (py - y1).abs() <= reach && !top;
+            (left, top, right, bottom)
+        };
+        let (l, t, rt, b) = edges(22.0);
+        if (l || rt) && (t || b) {
+            let cursor = if l == t { "nwse-resize" } else { "nesw-resize" };
+            return Some((Grab::Edges { left: l, top: t, right: rt, bottom: b }, r, cursor));
+        }
+        let (l, t, rt, b) = edges(12.0);
+        let within_x = px > x0 && px < x1;
+        let within_y = py > y0 && py < y1;
+        if (l || rt) && within_y {
+            return Some((Grab::Edges { left: l, top: false, right: rt, bottom: false }, r, "ew-resize"));
+        }
+        if (t || b) && within_x {
+            return Some((Grab::Edges { left: false, top: t, right: false, bottom: b }, r, "ns-resize"));
+        }
+        if within_x && within_y {
+            return Some((Grab::Move, r, "move"));
+        }
+        let at = Rect { x: ((px - ox) / dw).clamp(0.0, 1.0) as f32, y: ((py - oy) / dh).clamp(0.0, 1.0) as f32, w: 0.0, h: 0.0 };
+        Some((Grab::Edges { left: false, top: false, right: true, bottom: true }, at, "crosshair"))
+    }
+
+    fn draw_crop(&self, cr: &gtk::cairo::Context) {
+        if !self.cropping() || !self.frame_shown.get() {
+            return;
+        }
+        let Some((ox, oy, dw, dh)) = self.shown_rect() else { return };
+        let g = *self.geometry.borrow();
+        let (x, y, w, h) = (ox + g.x as f64 * dw, oy + g.y as f64 * dh, g.w as f64 * dw, g.h as f64 * dh);
+        cr.set_fill_rule(gtk::cairo::FillRule::EvenOdd);
+        cr.rectangle(ox, oy, dw, dh);
+        cr.rectangle(x, y, w, h);
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.6);
+        let _ = cr.fill();
+        // thirds, or a fine grid while straightening
+        let n = if g.angle != 0.0 { 8 } else { 3 };
+        cr.set_source_rgba(1.0, 1.0, 1.0, if n == 3 { 0.4 } else { 0.25 });
+        cr.set_line_width(1.0);
+        for i in 1..n {
+            let f = i as f64 / n as f64;
+            cr.move_to(x + w * f, y);
+            cr.line_to(x + w * f, y + h);
+            cr.move_to(x, y + h * f);
+            cr.line_to(x + w, y + h * f);
+        }
+        let _ = cr.stroke();
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.9);
+        cr.set_line_width(1.5);
+        cr.rectangle(x, y, w, h);
+        let _ = cr.stroke();
+        cr.set_line_width(4.0);
+        let l = 20f64.min(w / 2.0).min(h / 2.0);
+        for (cx, cy, sx, sy) in [(x, y, 1.0, 1.0), (x + w, y, -1.0, 1.0), (x, y + h, 1.0, -1.0), (x + w, y + h, -1.0, -1.0)] {
+            cr.move_to(cx, cy + sy * l);
+            cr.line_to(cx, cy);
+            cr.line_to(cx + sx * l, cy);
+        }
+        let _ = cr.stroke();
+    }
+
     fn rendered(&self, seq: u64, result: Result<Image, String>, ms: u128) {
         if seq != self.seq.get() {
             return; // a newer render is on its way
         }
-        self.set_busy(false);
+        self.set_busy(None);
         match result {
             Ok(img) => {
                 self.ui.picture.set_paintable(Some(&texture(&img)));
+                self.frame_shown.set(self.frame_requested.get());
+                self.ui.crop_area.queue_draw();
                 let sessions = self.sessions.borrow();
                 if let Some(s) = sessions.get(self.current.get()) {
-                    let (w, h) = s.size();
+                    let (w, h) = s.output_size(&self.settings());
                     let name = s.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     let raw = if s.is_raw() { "RAW, " } else { "" };
                     self.ui.info.set_text(&format!("{name}   {raw}{w} x {h}   preview in {:.1} s", ms as f32 / 1000.0));
@@ -269,6 +482,16 @@ impl App {
             }
             Err(e) => self.toast(&e),
         }
+    }
+}
+
+/// What the AI is looking for, for the status box.
+fn ai_message(s: &Settings) -> String {
+    let effect = pipeline::EFFECTS[s.effect];
+    match s.effect {
+        pipeline::SKELETON => format!("{effect}: finding poses"),
+        pipeline::FACE_MESH => format!("{effect}: finding faces"),
+        _ => format!("{effect}: finding {}", ai::TARGET_NAMES[s.target.min(ai::TARGET_NAMES.len() - 1)].to_lowercase()),
     }
 }
 
@@ -330,13 +553,32 @@ fn build(app: &adw::Application) {
         .title("Drop photos here")
         .description("Sony ARW and other RAW files, JPEG, PNG or TIFF.\nDrop several for Crowd remover or Trails.")
         .build();
-    let spinner = gtk::Spinner::builder().halign(gtk::Align::End).valign(gtk::Align::Start).margin_top(12).margin_end(12).visible(false).build();
-    spinner.set_size_request(28, 28);
+    let status = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(10)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .css_classes(["osd", "card"])
+        .visible(false)
+        .build();
+    let status_spinner = adw::Spinner::new();
+    status_spinner.set_size_request(40, 40);
+    status_spinner.set_margin_top(18);
+    let status_title = gtk::Label::builder().css_classes(["title-4"]).margin_start(28).margin_end(28).build();
+    let status_sub = gtk::Label::builder().css_classes(["dim-label", "caption"]).margin_start(28).margin_end(28).build();
+    let status_pad = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    status_pad.set_margin_bottom(8);
+    status.append(&status_spinner);
+    status.append(&status_title);
+    status.append(&status_sub);
+    status.append(&status_pad);
     let info = gtk::Label::builder().halign(gtk::Align::Start).valign(gtk::Align::End).margin_start(12).margin_bottom(8).css_classes(["dim-label", "caption"]).build();
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&picture));
+    let crop_area = gtk::DrawingArea::builder().hexpand(true).vexpand(true).can_target(false).build();
+    overlay.add_overlay(&crop_area);
     overlay.add_overlay(&empty);
-    overlay.add_overlay(&spinner);
+    overlay.add_overlay(&status);
     overlay.add_overlay(&info);
     let strip = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     strip.set_margin_start(8);
@@ -384,7 +626,39 @@ fn build(app: &adw::Application) {
 
     let lens_group = adw::PreferencesGroup::builder().title("Diffusion filter").build();
     let diffusion = combo("Filter", &fx::diffusion::NAMES, 0);
+    let diff_strength = spin("Strength", 0.0, 200.0, 5.0, 100.0, 0);
+    let diff_size = spin("Glow size", 25.0, 300.0, 5.0, 100.0, 0);
+    let bloom = spin("Highlight bloom", 0.0, 200.0, 5.0, 100.0, 0);
+    let warmth = spin("Warmth", -100.0, 100.0, 5.0, 0.0, 0);
+    diff_strength.set_subtitle("How much light spreads");
+    diff_size.set_subtitle("How far the glow reaches");
+    bloom.set_subtitle("Extra glow round lamps and bright spots");
+    warmth.set_subtitle("Cool blue to warm orange glow");
     lens_group.add(&diffusion);
+    for r in [&diff_strength, &diff_size, &bloom, &warmth] {
+        lens_group.add(r);
+    }
+
+    let crop_group = adw::PreferencesGroup::builder()
+        .title("Crop")
+        .description("Press Crop at the top, then drag on the photo. Effects are hidden while cropping.")
+        .visible(false)
+        .build();
+    let reset_crop = gtk::Button::builder().label("Reset").css_classes(["flat"]).valign(gtk::Align::Center).build();
+    crop_group.set_header_suffix(Some(&reset_crop));
+    let aspect = combo("Aspect", &ASPECTS, 0);
+    let swap = gtk::Button::builder().label("Swap").tooltip_text("Portrait or landscape").css_classes(["flat"]).valign(gtk::Align::Center).build();
+    aspect.add_suffix(&swap);
+    let straighten = spin("Straighten", -20.0, 20.0, 0.1, 0.0, 1);
+    straighten.set_subtitle("Degrees, the grid helps line it up");
+    let rotate_row = adw::ActionRow::builder().title("Rotate").build();
+    let rot_left = gtk::Button::builder().icon_name("object-rotate-left-symbolic").tooltip_text("Turn left").css_classes(["flat"]).valign(gtk::Align::Center).build();
+    let rot_right = gtk::Button::builder().icon_name("object-rotate-right-symbolic").tooltip_text("Turn right").css_classes(["flat"]).valign(gtk::Align::Center).build();
+    rotate_row.add_suffix(&rot_left);
+    rotate_row.add_suffix(&rot_right);
+    crop_group.add(&aspect);
+    crop_group.add(&straighten);
+    crop_group.add(&rotate_row);
 
     let dev_group = adw::PreferencesGroup::builder().title("Develop").description("Film Sim's after-shot effects").build();
     let halation = switch("Halation", "CineStill-style red glow round bright lights");
@@ -397,7 +671,7 @@ fn build(app: &adw::Application) {
     dev_group.add(&mono);
 
     let page = adw::PreferencesPage::new();
-    for g in [&raw_group, &film_group, &fx_group, &lens_group, &dev_group] {
+    for g in [&raw_group, &crop_group, &film_group, &fx_group, &lens_group, &dev_group] {
         page.add(g);
     }
     page.set_width_request(390);
@@ -412,6 +686,8 @@ fn build(app: &adw::Application) {
     let export_button = gtk::Button::builder().label("Export\u{2026}").css_classes(["suggested-action"]).sensitive(false).build();
     header.pack_start(&open_button);
     header.pack_start(&before);
+    let crop_button = gtk::ToggleButton::builder().label("Crop").tooltip_text("Crop, straighten and rotate (Enter when done)").sensitive(false).build();
+    header.pack_start(&crop_button);
     header.pack_end(&export_button);
     let view = adw::ToolbarView::new();
     view.add_top_bar(&header);
@@ -428,7 +704,9 @@ fn build(app: &adw::Application) {
             toasts,
             picture,
             empty,
-            spinner,
+            status,
+            status_title,
+            status_sub,
             info,
             strip,
             strip_scroll,
@@ -449,6 +727,15 @@ fn build(app: &adw::Application) {
             colour,
             glow,
             diffusion,
+            diff_strength,
+            diff_size,
+            bloom,
+            warmth,
+            crop_button: crop_button.clone(),
+            crop_group,
+            aspect,
+            straighten,
+            crop_area: crop_area.clone(),
             halation,
             grain,
             leak,
@@ -458,10 +745,15 @@ fn build(app: &adw::Application) {
         sessions: RefCell::new(Vec::new()),
         current: Cell::new(0),
         seq: Cell::new(0),
-        busy: Cell::new(false),
+        busy_token: Rc::new(Cell::new(0)),
         brand_films: RefCell::new(Vec::new()),
         updating: Cell::new(false),
         export_opts: RefCell::new(ExportOptions::default()),
+        geometry: RefCell::new(Geometry::default()),
+        portrait: Cell::new(false),
+        drag: RefCell::new(None),
+        frame_requested: Cell::new(false),
+        frame_shown: Cell::new(false),
     });
     app.update_rows();
 
@@ -475,7 +767,7 @@ fn build(app: &adw::Application) {
             }
         });
     }
-    for row in [&u.exposure, &u.contrast, &u.strength, &u.amount] {
+    for row in [&u.exposure, &u.contrast, &u.strength, &u.amount, &u.diff_strength, &u.diff_size, &u.bloom, &u.warmth] {
         let a = Rc::downgrade(&app);
         row.connect_value_notify(move |_| {
             if let Some(a) = a.upgrade() {
@@ -507,6 +799,131 @@ fn build(app: &adw::Application) {
                 a.request_render();
             }
         });
+    }
+
+    // the crop tool
+    {
+        let a = Rc::downgrade(&app);
+        crop_button.connect_toggled(move |b| {
+            let Some(a) = a.upgrade() else { return };
+            b.set_label(if b.is_active() { "Done" } else { "Crop" });
+            a.ui.crop_area.set_can_target(b.is_active());
+            if b.is_active() {
+                b.add_css_class("suggested-action");
+            } else {
+                b.remove_css_class("suggested-action");
+            }
+            a.ui.crop_area.queue_draw();
+            a.request_render();
+        });
+    }
+    {
+        let a = Rc::downgrade(&app);
+        crop_area.set_draw_func(move |_, cr, _, _| {
+            if let Some(a) = a.upgrade() {
+                a.draw_crop(cr);
+            }
+        });
+    }
+    {
+        let drag = gtk::GestureDrag::new();
+        let a = Rc::downgrade(&app);
+        drag.connect_drag_begin(move |_, x, y| {
+            if let Some(a) = a.upgrade() {
+                *a.drag.borrow_mut() = a.grab_at(x, y).map(|(g, r, _)| (g, r));
+            }
+        });
+        let a = Rc::downgrade(&app);
+        drag.connect_drag_update(move |_, dx, dy| {
+            let Some(a) = a.upgrade() else { return };
+            let Some((grab, start)) = *a.drag.borrow() else { return };
+            let Some((_, _, dw, dh)) = a.shown_rect() else { return };
+            let r = geometry::drag(start, grab, (dx / dw) as f32, (dy / dh) as f32, a.shape());
+            a.geometry.borrow_mut().set_rect(r);
+            a.ui.crop_area.queue_draw();
+        });
+        let a = Rc::downgrade(&app);
+        drag.connect_drag_end(move |_, _, _| {
+            if let Some(a) = a.upgrade() {
+                *a.drag.borrow_mut() = None;
+            }
+        });
+        crop_area.add_controller(drag);
+        let motion = gtk::EventControllerMotion::new();
+        let a = Rc::downgrade(&app);
+        motion.connect_motion(move |_, x, y| {
+            let Some(a) = a.upgrade() else { return };
+            if a.drag.borrow().is_some() {
+                return;
+            }
+            let cursor = a.grab_at(x, y).map(|g| g.2).unwrap_or("default");
+            a.ui.crop_area.set_cursor_from_name(Some(cursor));
+        });
+        crop_area.add_controller(motion);
+    }
+    {
+        let a = Rc::downgrade(&app);
+        u.aspect.connect_selected_notify(move |_| {
+            let Some(a) = a.upgrade() else { return };
+            if a.updating.get() {
+                return;
+            }
+            let (fw, fh) = a.frame();
+            a.portrait.set(fh > fw);
+            a.apply_shape();
+            a.crop_changed();
+        });
+    }
+    {
+        let a = Rc::downgrade(&app);
+        swap.connect_clicked(move |_| {
+            let Some(a) = a.upgrade() else { return };
+            a.portrait.set(!a.portrait.get());
+            a.apply_shape();
+            a.crop_changed();
+        });
+    }
+    {
+        let a = Rc::downgrade(&app);
+        u.straighten.connect_value_notify(move |r| {
+            let Some(a) = a.upgrade() else { return };
+            if a.updating.get() {
+                return;
+            }
+            a.geometry.borrow_mut().angle = r.value() as f32;
+            a.crop_changed();
+        });
+    }
+    for (button, cw) in [(&rot_left, false), (&rot_right, true)] {
+        let a = Rc::downgrade(&app);
+        button.connect_clicked(move |_| {
+            let Some(a) = a.upgrade() else { return };
+            a.geometry.borrow_mut().turn(cw);
+            a.portrait.set(!a.portrait.get());
+            a.request_render();
+        });
+    }
+    {
+        let a = Rc::downgrade(&app);
+        reset_crop.connect_clicked(move |_| {
+            if let Some(a) = a.upgrade() {
+                a.reset_crop();
+                a.request_render();
+            }
+        });
+    }
+    {
+        let keys = gtk::EventControllerKey::new();
+        let a = Rc::downgrade(&app);
+        keys.connect_key_pressed(move |_, key, _, _| {
+            let Some(a) = a.upgrade() else { return glib::Propagation::Proceed };
+            if a.cropping() && (key == gdk::Key::Return || key == gdk::Key::KP_Enter) {
+                a.ui.crop_button.set_active(false);
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        window.add_controller(keys);
     }
 
     // opening photos: the button, and dropping files on the window
@@ -557,12 +974,11 @@ fn build(app: &adw::Application) {
         });
     }
 
-    // results from the worker
+    // results from the worker; this loop holds the only strong reference, keeping the app alive with the window
     {
-        let a = Rc::downgrade(&app);
+        let a = app.clone();
         glib::spawn_future_local(async move {
             while let Ok(msg) = done_rx.recv().await {
-                let Some(a) = a.upgrade() else { return };
                 match msg {
                     Done::Opened(s, errors) => a.opened(s, errors),
                     Done::Rendered { seq, result, ms } => a.rendered(seq, result, ms),
@@ -666,7 +1082,7 @@ fn export_dialog(app: &Rc<App>) {
         }
     };
     let read = Rc::new(read);
-    let (w, h) = sessions.get(current).map(|s| s.size()).unwrap_or((0, 0));
+    let (w, h) = sessions.get(current).map(|s| s.output_size(&settings)).unwrap_or((0, 0));
     let refresh = {
         let (read, quality, long_edge, percent, up_model, sharpen, sharpen_amount, estimate, which) =
             (read.clone(), quality.clone(), long_edge.clone(), percent.clone(), up_model.clone(), sharpen.clone(), sharpen_amount.clone(), estimate.clone(), which.clone());

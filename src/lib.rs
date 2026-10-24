@@ -7,6 +7,7 @@ pub mod export;
 pub mod facemesh;
 pub mod film;
 pub mod fx;
+pub mod geometry;
 pub mod img;
 pub mod io;
 pub mod pipeline;

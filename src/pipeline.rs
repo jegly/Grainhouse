@@ -4,7 +4,8 @@
 use crate::ai::{self, Pose, Subjects, MODEL_SIZES};
 use crate::develop::{develop, DevelopOptions};
 use crate::film;
-use crate::fx::{self, contours::Contours, diffusion::Diffusion, ghost::Ghost, mesh::Mesh, scene::Scene, skeleton::Skeleton};
+use crate::fx::{self, contours::Contours, diffusion::{Diffusion, DiffusionOptions}, ghost::Ghost, mesh::Mesh, scene::Scene, skeleton::Skeleton};
+use crate::geometry::{self, Geometry};
 use crate::img::Image;
 use crate::io::{self, RawLinear, RawOptions};
 use std::collections::HashMap;
@@ -49,6 +50,9 @@ pub struct Settings {
     pub colour: usize,
     pub glow: usize,
     pub diffusion: usize,
+    pub diffusion_opt: DiffusionOptions,
+    /// turn, straighten and crop
+    pub geometry: Geometry,
 }
 
 impl Default for Settings {
@@ -67,6 +71,8 @@ impl Default for Settings {
             colour: 0,
             glow: 2,
             diffusion: 0,
+            diffusion_opt: DiffusionOptions::default(),
+            geometry: Geometry::default(),
         }
     }
 }
@@ -117,18 +123,41 @@ impl Session {
         b.1.clone()
     }
 
+    /// Size of the photo as opened (upright, before any crop).
     pub fn size(&self) -> (usize, usize) {
         let b = self.base.lock().unwrap();
         (b.1.w, b.1.h)
     }
 
+    /// Size of the finished picture at full resolution, after the crop.
+    pub fn output_size(&self, s: &Settings) -> (usize, usize) {
+        let (w, h) = self.size();
+        s.geometry.size(w, h)
+    }
+
+    /// The developed photo turned, straightened and cropped, long side at most `long`.
+    fn shaped(&self, s: &Settings, long: usize) -> Image {
+        let mut b = self.base.lock().unwrap();
+        if let Some(raw) = &self.raw {
+            if b.0 != s.raw {
+                *b = (s.raw, io::render_raw(raw, s.raw));
+            }
+        }
+        geometry::apply(&b.1, &s.geometry, long)
+    }
+
+    /// True when rendering with these settings will run the AI models first (the slow part).
+    pub fn needs_ai(&self, s: &Settings) -> bool {
+        s.effect != NONE && !is_multi(s.effect) && !self.cache.lock().unwrap().contains_key(&found_key(s))
+    }
+
     /// The models' results for these settings, from the cache or by running them.
     fn found(&self, s: &Settings) -> Result<Found, String> {
-        let key = format!("{}-{}-{}-{}", s.effect, s.model, s.target, s.raw.exposure);
+        let key = found_key(s);
         if let Some(f) = self.cache.lock().unwrap().get(&key) {
             return Ok(f.clone());
         }
-        let det = self.base(s.raw).fit(DETECT_SIZE);
+        let det = self.shaped(s, DETECT_SIZE);
         let size = MODEL_SIZES[s.model.min(2)];
         let (fw, fh) = (det.w as f32, det.h as f32);
         let to_frac = |pts: Vec<f32>| -> Vec<f32> { pts.chunks(2).flat_map(|p| [p[0] / fw, p[1] / fh]).collect() };
@@ -165,7 +194,7 @@ impl Session {
 
     /// Renders the edit with the long side at most `long` pixels (usize::MAX for full size).
     pub fn render(&self, s: &Settings, long: usize) -> Result<Image, String> {
-        let mut img = self.base(s.raw).fit(long);
+        let mut img = self.shaped(s, long);
         apply_film(&mut img, s);
         if s.effect != NONE && !is_multi(s.effect) {
             let found = self.found(s)?;
@@ -174,6 +203,11 @@ impl Session {
         finish(&mut img, s, seed_of(&self.path));
         Ok(img)
     }
+}
+
+fn found_key(s: &Settings) -> String {
+    let g = &s.geometry;
+    format!("{}-{}-{}-{}-{}-{}-{}-{}-{}-{}", s.effect, s.model, s.target, s.raw.exposure, g.quarter, g.angle, g.x, g.y, g.w, g.h)
 }
 
 fn seed_of(path: &Path) -> u64 {
@@ -191,7 +225,7 @@ fn finish(img: &mut Image, s: &Settings, seed: u64) {
     if s.diffusion > 0 {
         let (dw, dh) = scaled(img, 640);
         let preview = img.resized(dw, dh);
-        fx::run(&Diffusion::new(&preview.px, dw, dh, s.diffusion), img);
+        fx::run(&Diffusion::new(&preview.px, dw, dh, s.diffusion, &s.diffusion_opt), img);
     }
     let mut d = s.develop;
     d.seed = seed;
@@ -257,7 +291,7 @@ fn to_px(frac: &[f32], mw: usize, mh: usize) -> Vec<f32> {
 
 /// Crowd remover / Trails over several photos (oldest first), then the film look and finishing.
 pub fn render_multi(sessions: &[&Session], s: &Settings, long: usize) -> Result<Image, String> {
-    let frames: Vec<Image> = sessions.iter().map(|x| x.base(s.raw).fit(long)).collect();
+    let frames: Vec<Image> = sessions.iter().map(|x| x.shaped(s, long)).collect();
     let kind = if s.effect == TRAILS { fx::multishot::TRAILS } else { fx::multishot::CROWD };
     let mut img = fx::multishot::combine(&frames, kind, s.amount, s.colour)?;
     apply_film(&mut img, s);
