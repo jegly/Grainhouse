@@ -10,18 +10,26 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 
-/// How RAW files are turned into a picture: exposure and the camera-like contrast curve.
+/// How RAW files are turned into a picture: white balance, exposure, shadows and highlights, and contrast.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RawOptions {
     /// Exposure change in stops.
     pub exposure: f32,
     /// 0 = flat (straight sRGB), 1 = camera-like contrast.
     pub contrast: f32,
+    /// White balance in kelvin, None = as shot.
+    pub kelvin: Option<f32>,
+    /// -1 green .. 1 magenta
+    pub tint: f32,
+    /// -1 darker .. 1 lifted (local, so the picture doesn't go flat)
+    pub shadows: f32,
+    /// -1 recovered .. 1 brighter
+    pub highlights: f32,
 }
 
 impl Default for RawOptions {
     fn default() -> Self {
-        RawOptions { exposure: 0.0, contrast: 1.0 }
+        RawOptions { exposure: 0.0, contrast: 1.0, kelvin: None, tint: 0.0, shadows: 0.0, highlights: 0.0 }
     }
 }
 
@@ -40,6 +48,15 @@ pub struct RawLinear {
     pub h: usize,
     pub rgb: Vec<f32>,
     pub orientation: u16,
+    /// the white the camera balanced for (CIE xy), if known
+    pub white_xy: Option<(f32, f32)>,
+}
+
+impl RawLinear {
+    /// The camera's white balance as a colour temperature.
+    pub fn as_shot_kelvin(&self) -> Option<f32> {
+        self.white_xy.map(crate::whitebalance::kelvin_of)
+    }
 }
 
 pub fn decode_raw(path: &Path) -> Result<RawLinear, String> {
@@ -57,6 +74,10 @@ pub fn decode_raw(path: &Path) -> Result<RawLinear, String> {
         ProcessingStep::Calibrate,
         ProcessingStep::CropDefault,
     ];
+    let white_xy = raw
+        .color_matrix_find_first([rawler::imgop::xyz::Illuminant::D65])
+        .filter(|(_, m)| m.len() >= 9)
+        .and_then(|(_, m)| crate::whitebalance::as_shot_xy(raw.wb_coeffs, &[[m[0], m[1], m[2]], [m[3], m[4], m[5]], [m[6], m[7], m[8]]]));
     let inter = RawDevelop::new_with(&steps).develop_intermediate(&raw).map_err(|e| format!("RAW develop failed: {e}"))?;
     let dim = inter.dim();
     let rgb: Vec<f32> = match inter {
@@ -64,7 +85,7 @@ pub fn decode_raw(path: &Path) -> Result<RawLinear, String> {
         Intermediate::Monochrome(p) => p.data.iter().flat_map(|&v| [v, v, v]).collect(),
         Intermediate::FourColor(p) => p.data.iter().flat_map(|c| [c[0], c[1], c[2]]).collect(),
     };
-    Ok(RawLinear { w: dim.w, h: dim.h, rgb, orientation })
+    Ok(RawLinear { w: dim.w, h: dim.h, rgb, orientation, white_xy })
 }
 
 /// Linear RAW data to an 8-bit picture: exposure, a soft highlight shoulder, sRGB, then a gentle S-curve
@@ -94,9 +115,28 @@ pub fn render_raw(raw: &RawLinear, opt: RawOptions) -> Image {
         lut[((x * (N - 1) as f32) as usize).min(N - 1)]
     };
     let sat = 1.0 + (CAMERA_SATURATION - 1.0) * opt.contrast;
+    let wb = match (raw.white_xy, opt.kelvin) {
+        (Some(xy), kelvin) if kelvin.is_some() || opt.tint != 0.0 => {
+            let k = kelvin.unwrap_or_else(|| crate::whitebalance::kelvin_of(xy));
+            Some(crate::whitebalance::correction(xy, k, opt.tint))
+        }
+        _ => None,
+    };
+    let balanced = |i: usize| -> [f32; 3] {
+        let c = [raw.rgb[i * 3], raw.rgb[i * 3 + 1], raw.rgb[i * 3 + 2]];
+        match &wb {
+            Some(m) => crate::whitebalance::apply(m, c),
+            None => c,
+        }
+    };
+    let local = crate::localtone::LocalTone::new(raw.w, raw.h, gain, opt.shadows, opt.highlights, &balanced);
     let mut img = Image::new(raw.w, raw.h);
     img.px.par_iter_mut().enumerate().for_each(|(i, p)| {
-        let c = &raw.rgb[i * 3..i * 3 + 3];
+        let mut c = balanced(i);
+        if let Some(l) = &local {
+            let k = l.gain(i % raw.w, i / raw.w, c);
+            c = c.map(|v| v * k);
+        }
         let (r, g, b) = (look(c[0]) as f32, look(c[1]) as f32, look(c[2]) as f32);
         let l = 0.299 * r + 0.587 * g + 0.114 * b;
         *p = crate::img::pack_f(l + (r - l) * sat, l + (g - l) * sat, l + (b - l) * sat);

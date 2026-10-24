@@ -46,6 +46,10 @@ fn main() {
                     std::process::exit(2)
                 }));
             }
+            "--lut" => s.film = Some(format!("lut:{}", val())),
+            "--camera" => s.camera = pick(&alpha_studio::camera::names(), &val(), "camera"),
+            "--camera-strength" => s.camera_strength = val().parse().unwrap_or(1.0),
+            "--date-stamp" => s.date_stamp = true,
             "--strength" => s.strength = val().parse().unwrap_or(1.0),
             "--effect" => s.effect = pick(&pipeline::EFFECTS, &val(), "effect"),
             "--target" => s.target = pick(&ai::TARGET_NAMES, &val(), "target"),
@@ -79,6 +83,10 @@ fn main() {
                 }
                 _ => {}
             },
+            "--kelvin" => s.raw.kelvin = val().parse().ok(),
+            "--tint" => s.raw.tint = val().parse().unwrap_or(0.0),
+            "--shadows" => s.raw.shadows = val().parse().unwrap_or(0.0),
+            "--highlights" => s.raw.highlights = val().parse().unwrap_or(0.0),
             "--exposure" => s.raw.exposure = val().parse().unwrap_or(0.0),
             "--upscale" => ex.upscale = match val().as_str() { "2x" | "2" => 1, "4x" | "4" => 2, _ => 0 },
             "--upscaler" => ex.upscale_model = pick(&["fast", "clean", "max"], &val(), "upscaler"),

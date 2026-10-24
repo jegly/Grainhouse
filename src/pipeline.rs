@@ -36,7 +36,7 @@ pub fn is_multi(effect: usize) -> bool {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Settings {
     pub raw: RawOptions,
-    /// Film file name from the library (e.g. "57.bin"), or None.
+    /// Film file name from the library (e.g. "57.bin"), "lut:" + the path of a .cube file, or None.
     pub film: Option<String>,
     pub strength: f32,
     pub develop: DevelopOptions,
@@ -53,6 +53,11 @@ pub struct Settings {
     pub diffusion_opt: DiffusionOptions,
     /// turn, straighten and crop
     pub geometry: Geometry,
+    /// camera look (index into camera::CAMERAS, 0 = none) and how much of it
+    pub camera: usize,
+    pub camera_strength: f32,
+    /// the orange date stamp
+    pub date_stamp: bool,
 }
 
 impl Default for Settings {
@@ -73,6 +78,9 @@ impl Default for Settings {
             diffusion: 0,
             diffusion_opt: DiffusionOptions::default(),
             geometry: Geometry::default(),
+            camera: 0,
+            camera_strength: 1.0,
+            date_stamp: false,
         }
     }
 }
@@ -91,6 +99,8 @@ pub struct Session {
     raw: Option<RawLinear>,
     base: Mutex<(RawOptions, Image)>,
     cache: Mutex<HashMap<String, Found>>,
+    /// when the photo was taken, for the date stamp
+    pub date: Option<(i32, u32, u32)>,
 }
 
 /// Long side of the copy the models look at.
@@ -105,11 +115,17 @@ impl Session {
         } else {
             (None, io::load_image(path)?)
         };
-        Ok(Session { path: path.to_path_buf(), raw, base: Mutex::new((RawOptions::default(), base)), cache: Mutex::new(HashMap::new()) })
+        let date = crate::camera::photo_date(path);
+        Ok(Session { path: path.to_path_buf(), raw, base: Mutex::new((RawOptions::default(), base)), cache: Mutex::new(HashMap::new()), date })
     }
 
     pub fn is_raw(&self) -> bool {
         self.raw.is_some()
+    }
+
+    /// The camera's own white balance as a colour temperature (RAW files only).
+    pub fn as_shot_kelvin(&self) -> Option<f32> {
+        self.raw.as_ref().and_then(|r| r.as_shot_kelvin())
     }
 
     /// The photo developed with these RAW settings (non-RAW photos ignore them).
@@ -195,12 +211,13 @@ impl Session {
     /// Renders the edit with the long side at most `long` pixels (usize::MAX for full size).
     pub fn render(&self, s: &Settings, long: usize) -> Result<Image, String> {
         let mut img = self.shaped(s, long);
-        apply_film(&mut img, s);
+        crate::camera::colour(&mut img, s.camera, s.camera_strength);
+        apply_film(&mut img, s)?;
         if s.effect != NONE && !is_multi(s.effect) {
             let found = self.found(s)?;
             apply_effect(&mut img, s, &found, seed_of(&self.path));
         }
-        finish(&mut img, s, seed_of(&self.path));
+        finish(&mut img, s, seed_of(&self.path), self.date);
         Ok(img)
     }
 }
@@ -214,18 +231,28 @@ fn seed_of(path: &Path) -> u64 {
     path.to_string_lossy().bytes().fold(1469598103934665603u64, |h, b| (h ^ b as u64).wrapping_mul(1099511628211))
 }
 
-fn apply_film(img: &mut Image, s: &Settings) {
-    if let Some(look) = s.film.as_deref().and_then(film::load) {
+fn apply_film(img: &mut Image, s: &Settings) -> Result<(), String> {
+    let Some(name) = s.film.as_deref() else { return Ok(()) };
+    if let Some(path) = name.strip_prefix("lut:") {
+        crate::lut::load(Path::new(path))?.apply(&mut img.px, s.strength);
+    } else if let Some(look) = film::load(name) {
         film::Applied::new(&look, s.strength).apply(&mut img.px);
     }
+    Ok(())
 }
 
-/// Diffusion, then the develop effects (grain last).
-fn finish(img: &mut Image, s: &Settings, seed: u64) {
+/// The camera's lens and sensor character, diffusion, the date stamp, then the develop effects (grain last).
+fn finish(img: &mut Image, s: &Settings, seed: u64, date: Option<(i32, u32, u32)>) {
+    crate::camera::character(img, s.camera, s.camera_strength, seed);
     if s.diffusion > 0 {
         let (dw, dh) = scaled(img, 640);
         let preview = img.resized(dw, dh);
         fx::run(&Diffusion::new(&preview.px, dw, dh, s.diffusion, &s.diffusion_opt), img);
+    }
+    if s.date_stamp {
+        if let Some(date) = date {
+            crate::camera::date_stamp(img, date);
+        }
     }
     let mut d = s.develop;
     d.seed = seed;
@@ -294,7 +321,8 @@ pub fn render_multi(sessions: &[&Session], s: &Settings, long: usize) -> Result<
     let frames: Vec<Image> = sessions.iter().map(|x| x.shaped(s, long)).collect();
     let kind = if s.effect == TRAILS { fx::multishot::TRAILS } else { fx::multishot::CROWD };
     let mut img = fx::multishot::combine(&frames, kind, s.amount, s.colour)?;
-    apply_film(&mut img, s);
-    finish(&mut img, s, sessions.first().map(|x| seed_of(&x.path)).unwrap_or(1));
+    crate::camera::colour(&mut img, s.camera, s.camera_strength);
+    apply_film(&mut img, s)?;
+    finish(&mut img, s, sessions.first().map(|x| seed_of(&x.path)).unwrap_or(1), sessions.first().and_then(|x| x.date));
     Ok(img)
 }

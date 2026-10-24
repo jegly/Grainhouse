@@ -3,13 +3,14 @@
 
 use adw::prelude::*;
 use alpha_studio::{
-    ai, develop, export,
+    ai, camera, develop, export,
     export::ExportOptions,
     film, fx,
     geometry::{self, Geometry, Grab, Rect},
     img::Image,
+    lut,
     pipeline::{self, Session, Settings},
-    upscale,
+    upscale, whitebalance,
 };
 use gtk::{gdk, gio, glib};
 use std::cell::{Cell, RefCell};
@@ -49,28 +50,36 @@ struct Ui {
     before: gtk::ToggleButton,
     export_button: gtk::Button,
     raw_group: adw::PreferencesGroup,
-    exposure: adw::SpinRow,
-    contrast: adw::SpinRow,
+    wb: adw::ComboRow,
+    kelvin: Slider,
+    tint: Slider,
+    shadows: Slider,
+    highlights: Slider,
+    camera: adw::ComboRow,
+    cam_strength: Slider,
+    stamp: adw::SwitchRow,
+    exposure: Slider,
+    contrast: Slider,
     brand: adw::ComboRow,
     film: adw::ComboRow,
-    strength: adw::SpinRow,
+    strength: Slider,
     effect: adw::ComboRow,
     target: adw::ComboRow,
     model: adw::ComboRow,
     look: adw::ComboRow,
     face: adw::ComboRow,
-    amount: adw::SpinRow,
+    amount: Slider,
     colour: adw::ComboRow,
     glow: adw::ComboRow,
     diffusion: adw::ComboRow,
-    diff_strength: adw::SpinRow,
-    diff_size: adw::SpinRow,
-    bloom: adw::SpinRow,
-    warmth: adw::SpinRow,
+    diff_strength: Slider,
+    diff_size: Slider,
+    bloom: Slider,
+    warmth: Slider,
     crop_button: gtk::ToggleButton,
     crop_group: adw::PreferencesGroup,
     aspect: adw::ComboRow,
-    straighten: adw::SpinRow,
+    straighten: Slider,
     /// draws the crop frame over the photo and takes the drags
     crop_area: gtk::DrawingArea,
     halation: adw::SwitchRow,
@@ -88,7 +97,7 @@ struct App {
     /// bumped on every busy change, so a delayed "show the status box" knows if it's still wanted
     busy_token: Rc<Cell<u64>>,
     /// films in the current brand, as shown in the Film row
-    brand_films: RefCell<Vec<&'static str>>,
+    brand_films: RefCell<Vec<String>>,
     updating: Cell<bool>,
     export_opts: RefCell<ExportOptions>,
     geometry: RefCell<Geometry>,
@@ -116,6 +125,77 @@ fn spin(title: &str, min: f64, max: f64, step: f64, value: f64, digits: u32) -> 
     row
 }
 
+/// A row with a slider and its value; double-click the row to put it back.
+#[derive(Clone)]
+struct Slider {
+    row: adw::ActionRow,
+    scale: gtk::Scale,
+}
+
+impl std::ops::Deref for Slider {
+    type Target = adw::ActionRow;
+    fn deref(&self) -> &adw::ActionRow {
+        &self.row
+    }
+}
+
+impl Slider {
+    fn value(&self) -> f64 {
+        self.scale.value()
+    }
+
+    fn set_value(&self, v: f64) {
+        self.scale.set_value(v);
+    }
+
+    fn connect_value_notify<F: Fn(&Slider) + 'static>(&self, f: F) {
+        let me = self.clone();
+        self.scale.connect_value_changed(move |_| f(&me));
+    }
+}
+
+fn slider(title: &str, min: f64, max: f64, step: f64, value: f64, digits: u32) -> Slider {
+    let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, min, max, step);
+    scale.set_value(value);
+    scale.set_digits(digits as i32);
+    scale.set_round_digits(digits as i32);
+    scale.set_draw_value(true);
+    scale.set_value_pos(gtk::PositionType::Left);
+    scale.set_hexpand(true);
+    scale.set_width_request(200);
+    scale.set_valign(gtk::Align::Center);
+    if value > min && value < max {
+        scale.add_mark(value, gtk::PositionType::Bottom, None);
+    }
+    // the wheel scrolls the panel, not the slider (too easy to change a setting by accident)
+    let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = scale.downgrade();
+    wheel.connect_scroll(move |c, _, dy| {
+        let sw = weak.upgrade().and_then(|s| s.ancestor(gtk::ScrolledWindow::static_type())).and_downcast::<gtk::ScrolledWindow>();
+        if let Some(sw) = sw {
+            let adj = sw.vadjustment();
+            let px = if c.unit() == gdk::ScrollUnit::Surface { dy } else { dy * 60.0 };
+            adj.set_value(adj.value() + px);
+        }
+        glib::Propagation::Stop
+    });
+    scale.add_controller(wheel);
+    let row = adw::ActionRow::builder().title(title).use_markup(false).build();
+    row.add_suffix(&scale);
+    let reset = gtk::GestureClick::new();
+    let weak = scale.downgrade();
+    reset.connect_pressed(move |_, n, _, _| {
+        if n == 2 {
+            if let Some(s) = weak.upgrade() {
+                s.set_value(value);
+            }
+        }
+    });
+    row.add_controller(reset);
+    Slider { row, scale }
+}
+
 fn switch(title: &str, subtitle: &str) -> adw::SwitchRow {
     adw::SwitchRow::builder().title(title).subtitle(subtitle).use_markup(false).build()
 }
@@ -131,8 +211,15 @@ impl App {
         let mut s = Settings::default();
         s.raw.exposure = u.exposure.value() as f32;
         s.raw.contrast = (u.contrast.value() / 100.0) as f32;
+        s.raw.kelvin = if u.wb.selected() == 0 { None } else { Some(u.kelvin.value() as f32) };
+        s.raw.tint = (u.tint.value() / 100.0) as f32;
+        s.raw.shadows = (u.shadows.value() / 100.0) as f32;
+        s.raw.highlights = (u.highlights.value() / 100.0) as f32;
+        s.camera = u.camera.selected() as usize;
+        s.camera_strength = (u.cam_strength.value() / 100.0) as f32;
+        s.date_stamp = u.stamp.is_active();
         let films = self.brand_films.borrow();
-        s.film = if u.brand.selected() == 0 { None } else { films.get(u.film.selected() as usize).map(|f| f.to_string()) };
+        s.film = if u.brand.selected() == 0 { None } else { films.get(u.film.selected() as usize).cloned() };
         s.strength = (u.strength.value() / 100.0) as f32;
         s.effect = u.effect.selected() as usize;
         s.target = u.target.selected() as usize;
@@ -181,6 +268,7 @@ impl App {
         for r in [&u.diff_strength, &u.diff_size, &u.bloom, &u.warmth] {
             r.set_visible(diffusing);
         }
+        u.cam_strength.set_sensitive(u.camera.selected() != 0);
         u.film.set_sensitive(u.brand.selected() != 0);
         u.strength.set_sensitive(u.brand.selected() != 0);
     }
@@ -188,19 +276,40 @@ impl App {
     fn fill_films(&self) {
         let brand = self.ui.brand.selected() as usize;
         let brands = film::brands();
-        let list: Vec<&'static str> =
-            if brand == 0 { Vec::new() } else { film::films().into_iter().filter(|f| f.brand == brands[brand - 1]).map(|f| f.file).collect() };
-        let names: Vec<String> = film::films()
-            .into_iter()
-            .filter(|f| list.contains(&f.file))
-            .map(|f| if f.error < 0.0 { format!("{}  \u{25c6}", f.name) } else { f.name.to_string() })
-            .collect();
+        let (ids, names): (Vec<String>, Vec<String>) = if brand == 0 {
+            (Vec::new(), Vec::new())
+        } else if brand > brands.len() {
+            lut::list().into_iter().map(|(n, p)| (format!("lut:{}", p.display()), n)).unzip()
+        } else {
+            film::films()
+                .into_iter()
+                .filter(|f| f.brand == brands[brand - 1])
+                .map(|f| (f.file.to_string(), if f.error < 0.0 { format!("{}  \u{25c6}", f.name) } else { f.name.to_string() }))
+                .unzip()
+        };
+        let empty_luts = brand > brands.len() && ids.is_empty();
+        self.ui.film.set_subtitle(if empty_luts { "Press Add LUT above to bring in .cube files" } else { "" });
         let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         self.updating.set(true);
         self.ui.film.set_model(Some(&gtk::StringList::new(&refs)));
         self.ui.film.set_selected(0);
         self.updating.set(false);
-        *self.brand_films.borrow_mut() = list;
+        *self.brand_films.borrow_mut() = ids;
+    }
+
+    /// With "As shot" chosen, shows the photo's own white balance on the Temperature slider.
+    fn sync_wb(&self) {
+        let sessions = self.sessions.borrow();
+        let Some(s) = sessions.get(self.current.get()) else { return };
+        let shot = s.as_shot_kelvin();
+        self.ui.kelvin.set_subtitle(&shot.map(|k| format!("Kelvin. As shot: {:.0} K", (k / 50.0).round() * 50.0)).unwrap_or("Kelvin".into()));
+        if self.ui.wb.selected() == 0 {
+            if let Some(k) = shot {
+                self.updating.set(true);
+                self.ui.kelvin.set_value(((k / 50.0).round() * 50.0) as f64);
+                self.updating.set(false);
+            }
+        }
     }
 
     fn request_render(&self) {
@@ -293,6 +402,7 @@ impl App {
         self.ui.export_button.set_sensitive(true);
         let raw = self.sessions.borrow()[0].is_raw();
         self.ui.raw_group.set_visible(raw);
+        self.sync_wb();
         self.ui.crop_group.set_visible(true);
         self.reset_crop();
         self.ui.crop_button.set_sensitive(true);
@@ -317,6 +427,7 @@ impl App {
                     app.current.set(i);
                     let raw = app.sessions.borrow()[i].is_raw();
                     app.ui.raw_group.set_visible(raw);
+                    app.sync_wb();
                     app.rebuild_strip();
                     app.request_render();
                 }
@@ -592,21 +703,50 @@ fn build(app: &adw::Application) {
 
     // the settings
     let raw_group = adw::PreferencesGroup::builder().title("RAW").visible(false).build();
-    let exposure = spin("Exposure", -3.0, 3.0, 0.1, 0.0, 1);
-    let contrast = spin("Contrast", 0.0, 100.0, 5.0, 100.0, 0);
-    raw_group.add(&exposure);
-    raw_group.add(&contrast);
+    let wb = combo("White balance", &whitebalance::PRESETS, 0);
+    let kelvin = slider("Temperature", 2000.0, 12000.0, 50.0, 5500.0, 0);
+    kelvin.set_subtitle("Kelvin");
+    let tint = slider("Tint", -100.0, 100.0, 1.0, 0.0, 0);
+    tint.set_subtitle("Green to magenta");
+    let exposure = slider("Exposure", -3.0, 3.0, 0.05, 0.0, 2);
+    let contrast = slider("Contrast", 0.0, 100.0, 1.0, 100.0, 0);
+    contrast.set_subtitle("0 is flat, 100 is like the camera's JPEG");
+    let shadows = slider("Shadows", -100.0, 100.0, 1.0, 0.0, 0);
+    shadows.set_subtitle("Lift or deepen the dark areas (D-Range)");
+    let highlights = slider("Highlights", -100.0, 100.0, 1.0, 0.0, 0);
+    highlights.set_subtitle("Below 0 brings back bright detail");
+    raw_group.add(&wb);
+    for r in [&kelvin, &tint, &exposure, &contrast, &shadows, &highlights] {
+        raw_group.add(&r.row);
+    }
 
-    let film_group = adw::PreferencesGroup::builder().title("Film").description("Film Sim's looks. \u{25c6} = designed for the camera").build();
+    let camera_group = adw::PreferencesGroup::builder().title("Camera").description("Looks in the spirit of other cameras' colour and character").build();
+    let camera_row = combo("Camera", &camera::names(), 0);
+    camera_row.set_enable_search(true);
+    let cam_strength = slider("Strength", 0.0, 100.0, 1.0, 100.0, 0);
+    let stamp = switch("Date stamp", "Orange date in the corner, from when the photo was taken");
+    camera_group.add(&camera_row);
+    camera_group.add(&cam_strength.row);
+    camera_group.add(&stamp);
+
+    let film_group = adw::PreferencesGroup::builder()
+        .title("Film")
+        .description("Film Sim's looks. \u{25c6} = designed for the camera. My LUTs = your .cube files")
+        .build();
+    let add_lut = gtk::Button::builder().label("Add LUT\u{2026}").css_classes(["flat"]).valign(gtk::Align::Center).build();
+    film_group.set_header_suffix(Some(&add_lut));
     let mut brands = vec!["None"];
     brands.extend(film::brands());
+    brands.push("My LUTs");
+    let lut_brand = brands.len() as u32 - 1;
     let brand = combo("Brand", &brands, 0);
     let film_row = combo("Film", &[], 0);
     film_row.set_enable_search(true);
-    let strength = spin("Strength", 0.0, 100.0, 5.0, 100.0, 0);
+    let strength = slider("Strength", 0.0, 100.0, 1.0, 100.0, 0);
+    strength.set_subtitle("How much of the film look");
     film_group.add(&brand);
     film_group.add(&film_row);
-    film_group.add(&strength);
+    film_group.add(&strength.row);
 
     let fx_group = adw::PreferencesGroup::builder().title("Effect").build();
     let effect = combo("Effect", &pipeline::EFFECTS, 0);
@@ -614,29 +754,29 @@ fn build(app: &adw::Application) {
     let model = combo("AI model", &ai::MODEL_NAMES, 1);
     let look = combo("Look", &fx::ghost::LOOKS, 1);
     let face = combo("Face", &fx::mesh::FACE_STYLES, 0);
-    let amount = spin("Amount", 0.0, 100.0, 5.0, 85.0, 0);
+    let amount = slider("Amount", 0.0, 100.0, 1.0, 85.0, 0);
     let colour = combo("Colour", &fx::COLOURS, 0);
     let glow = combo("Glow", &fx::GLOW_NAMES, 2);
     for r in [&effect, &target, &model, &look, &face] {
         fx_group.add(r);
     }
-    fx_group.add(&amount);
+    fx_group.add(&amount.row);
     fx_group.add(&colour);
     fx_group.add(&glow);
 
     let lens_group = adw::PreferencesGroup::builder().title("Diffusion filter").build();
     let diffusion = combo("Filter", &fx::diffusion::NAMES, 0);
-    let diff_strength = spin("Strength", 0.0, 200.0, 5.0, 100.0, 0);
-    let diff_size = spin("Glow size", 25.0, 300.0, 5.0, 100.0, 0);
-    let bloom = spin("Highlight bloom", 0.0, 200.0, 5.0, 100.0, 0);
-    let warmth = spin("Warmth", -100.0, 100.0, 5.0, 0.0, 0);
+    let diff_strength = slider("Strength", 0.0, 200.0, 1.0, 100.0, 0);
+    let diff_size = slider("Glow size", 25.0, 300.0, 1.0, 100.0, 0);
+    let bloom = slider("Highlight bloom", 0.0, 200.0, 1.0, 100.0, 0);
+    let warmth = slider("Warmth", -100.0, 100.0, 1.0, 0.0, 0);
     diff_strength.set_subtitle("How much light spreads");
     diff_size.set_subtitle("How far the glow reaches");
     bloom.set_subtitle("Extra glow round lamps and bright spots");
     warmth.set_subtitle("Cool blue to warm orange glow");
     lens_group.add(&diffusion);
     for r in [&diff_strength, &diff_size, &bloom, &warmth] {
-        lens_group.add(r);
+        lens_group.add(&r.row);
     }
 
     let crop_group = adw::PreferencesGroup::builder()
@@ -649,7 +789,7 @@ fn build(app: &adw::Application) {
     let aspect = combo("Aspect", &ASPECTS, 0);
     let swap = gtk::Button::builder().label("Swap").tooltip_text("Portrait or landscape").css_classes(["flat"]).valign(gtk::Align::Center).build();
     aspect.add_suffix(&swap);
-    let straighten = spin("Straighten", -20.0, 20.0, 0.1, 0.0, 1);
+    let straighten = slider("Straighten", -20.0, 20.0, 0.1, 0.0, 1);
     straighten.set_subtitle("Degrees, the grid helps line it up");
     let rotate_row = adw::ActionRow::builder().title("Rotate").build();
     let rot_left = gtk::Button::builder().icon_name("object-rotate-left-symbolic").tooltip_text("Turn left").css_classes(["flat"]).valign(gtk::Align::Center).build();
@@ -657,7 +797,7 @@ fn build(app: &adw::Application) {
     rotate_row.add_suffix(&rot_left);
     rotate_row.add_suffix(&rot_right);
     crop_group.add(&aspect);
-    crop_group.add(&straighten);
+    crop_group.add(&straighten.row);
     crop_group.add(&rotate_row);
 
     let dev_group = adw::PreferencesGroup::builder().title("Develop").description("Film Sim's after-shot effects").build();
@@ -671,7 +811,7 @@ fn build(app: &adw::Application) {
     dev_group.add(&mono);
 
     let page = adw::PreferencesPage::new();
-    for g in [&raw_group, &crop_group, &film_group, &fx_group, &lens_group, &dev_group] {
+    for g in [&raw_group, &crop_group, &camera_group, &film_group, &fx_group, &lens_group, &dev_group] {
         page.add(g);
     }
     page.set_width_request(390);
@@ -713,6 +853,14 @@ fn build(app: &adw::Application) {
             before: before.clone(),
             export_button: export_button.clone(),
             raw_group,
+            wb,
+            kelvin,
+            tint,
+            shadows,
+            highlights,
+            camera: camera_row,
+            cam_strength,
+            stamp,
             exposure,
             contrast,
             brand,
@@ -759,7 +907,7 @@ fn build(app: &adw::Application) {
 
     // any setting change re-renders
     let u = &app.ui;
-    for row in [&u.film, &u.effect, &u.target, &u.model, &u.look, &u.face, &u.colour, &u.glow, &u.diffusion, &u.grain] {
+    for row in [&u.camera, &u.film, &u.effect, &u.target, &u.model, &u.look, &u.face, &u.colour, &u.glow, &u.diffusion, &u.grain] {
         let a = Rc::downgrade(&app);
         row.connect_selected_notify(move |_| {
             if let Some(a) = a.upgrade() {
@@ -767,7 +915,7 @@ fn build(app: &adw::Application) {
             }
         });
     }
-    for row in [&u.exposure, &u.contrast, &u.strength, &u.amount, &u.diff_strength, &u.diff_size, &u.bloom, &u.warmth] {
+    for row in [&u.exposure, &u.contrast, &u.tint, &u.shadows, &u.highlights, &u.cam_strength, &u.strength, &u.amount, &u.diff_strength, &u.diff_size, &u.bloom, &u.warmth] {
         let a = Rc::downgrade(&app);
         row.connect_value_notify(move |_| {
             if let Some(a) = a.upgrade() {
@@ -775,7 +923,7 @@ fn build(app: &adw::Application) {
             }
         });
     }
-    for row in [&u.halation, &u.leak, &u.mono] {
+    for row in [&u.halation, &u.leak, &u.mono, &u.stamp] {
         let a = Rc::downgrade(&app);
         row.connect_active_notify(move |_| {
             if let Some(a) = a.upgrade() {
@@ -798,6 +946,77 @@ fn build(app: &adw::Application) {
             if let Some(a) = a.upgrade() {
                 a.request_render();
             }
+        });
+    }
+
+    // white balance: presets set the temperature, moving the temperature makes it Custom
+    {
+        let a = Rc::downgrade(&app);
+        u.wb.connect_selected_notify(move |row| {
+            let Some(a) = a.upgrade() else { return };
+            if a.updating.get() {
+                return;
+            }
+            let i = row.selected() as usize;
+            if i == 0 {
+                a.sync_wb();
+            } else if whitebalance::PRESET_KELVIN[i.min(whitebalance::CUSTOM)] > 0.0 {
+                a.updating.set(true);
+                a.ui.kelvin.set_value(whitebalance::PRESET_KELVIN[i] as f64);
+                a.updating.set(false);
+            }
+            a.request_render();
+        });
+    }
+    {
+        let a = Rc::downgrade(&app);
+        u.kelvin.connect_value_notify(move |_| {
+            let Some(a) = a.upgrade() else { return };
+            if a.updating.get() {
+                return;
+            }
+            if a.ui.wb.selected() as usize != whitebalance::CUSTOM {
+                a.updating.set(true);
+                a.ui.wb.set_selected(whitebalance::CUSTOM as u32);
+                a.updating.set(false);
+            }
+            a.request_render();
+        });
+    }
+    // My LUTs: copy .cube files into the LUT folder and pick the last one
+    {
+        let a = Rc::downgrade(&app);
+        add_lut.connect_clicked(move |_| {
+            let Some(a) = a.upgrade() else { return };
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some("Cube LUTs"));
+            filter.add_suffix("cube");
+            filter.add_suffix("CUBE");
+            let filters = gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&filter);
+            let dialog = gtk::FileDialog::builder().title("Add LUTs").filters(&filters).build();
+            let win = a.ui.window.clone();
+            glib::spawn_future_local(async move {
+                let Ok(list) = dialog.open_multiple_future(Some(&win)).await else { return };
+                let mut last = None;
+                for f in (0..list.n_items()).filter_map(|i| list.item(i).and_downcast::<gio::File>().and_then(|f| f.path())) {
+                    match lut::add(&f) {
+                        Ok(to) => last = Some(to),
+                        Err(e) => a.toast(&e),
+                    }
+                }
+                let Some(to) = last else { return };
+                a.updating.set(true);
+                a.ui.brand.set_selected(lut_brand);
+                a.updating.set(false);
+                a.fill_films();
+                let id = format!("lut:{}", to.display());
+                let pos = a.brand_films.borrow().iter().position(|f| *f == id);
+                if let Some(pos) = pos {
+                    a.ui.film.set_selected(pos as u32);
+                }
+                a.request_render();
+            });
         });
     }
 
