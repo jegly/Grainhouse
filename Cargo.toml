@@ -1,0 +1,18 @@
+[package]
+name = "alpha-studio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
+rawler = "0.8.0"
+rayon = "1.12.0"
+
+[build-dependencies]
+cc = "1.10.0"
+[profile.release]
+opt-level = 3
+codegen-units = 4
+
+[profile.dev]
+opt-level = 2
