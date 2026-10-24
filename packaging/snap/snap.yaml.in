@@ -1,0 +1,56 @@
+name: grainhouse
+version: '@VERSION@'
+summary: Photo editor with film looks, AI effects and upscaling
+description: |
+  Grainhouse edits RAW files and JPEGs: white balance, tone curve, colour mixer
+  and grading, crop, lens corrections, noise reduction and local adjustments with
+  AI masks. It adds 153 film stocks, creative looks, your own .cube LUTs, camera
+  looks, 30 effects (many using AI to find the people in your photo), diffusion
+  filters, film frames, and Real-ESRGAN upscaling on export.
+license: AGPL-3.0-only
+base: core26
+grade: stable
+confinement: strict
+architectures: [amd64]
+assumes: [snapd2.43]
+title: Grainhouse
+website: https://github.com/jegly/grainhouse
+apps:
+  grainhouse:
+    command: usr/bin/grainhouse
+    command-chain: [snap/command-chain/gpu-2604-wrapper, snap/command-chain/desktop-launch]
+    common-id: io.github.jegly.Grainhouse
+    desktop: meta/gui/grainhouse.desktop
+    plugs: [desktop, desktop-legacy, gsettings, home, removable-media, wayland, x11, opengl]
+  cli:
+    command: usr/bin/grainhouse --cli
+    plugs: [home, removable-media]
+plugs:
+  gnome-core26:
+    interface: content
+    target: $SNAP/gnome-platform
+    default-provider: gnome-core26
+  gpu-2604:
+    interface: content
+    target: $SNAP/gpu-2604
+    default-provider: mesa-2604
+  gtk-3-themes:
+    interface: content
+    target: $SNAP/data-dir/themes
+    default-provider: gtk-common-themes
+  icon-themes:
+    interface: content
+    target: $SNAP/data-dir/icons
+    default-provider: gtk-common-themes
+  sound-themes:
+    interface: content
+    target: $SNAP/data-dir/sounds
+    default-provider: gtk-common-themes
+environment:
+  SNAP_DESKTOP_RUNTIME: $SNAP/gnome-platform
+  GTK_USE_PORTAL: '1'
+layout:
+  /usr/share/xml/iso-codes:
+    bind: $SNAP/gnome-platform/usr/share/xml/iso-codes
+  /usr/libexec/glycin-loaders:
+    bind: $SNAP/gnome-platform/usr/libexec/glycin-loaders

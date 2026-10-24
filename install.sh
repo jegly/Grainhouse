@@ -15,7 +15,8 @@ if [ "$1" = "--remove" ]; then
 fi
 cargo build --release
 mkdir -p "$BIN" "$APPS" "$ICONS"
-install -m 755 target/release/grainhouse target/release/grainhouse-cli "$BIN/"
+install -m 755 target/release/grainhouse "$BIN/"
+ln -sf grainhouse "$BIN/grainhouse-cli"
 install -m 644 data/$ID.desktop "$APPS/"
 install -m 644 data/$ID.svg "$ICONS/"
 update-desktop-database "$APPS" 2>/dev/null || true

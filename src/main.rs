@@ -2171,6 +2171,10 @@ fn build(app: &adw::Application) {
     if let Some(dir) = std::env::var_os("GRAINHOUSE_TOUR") {
         glib::spawn_future_local(tour::run(app.clone(), PathBuf::from(dir)));
     }
+    // GRAINHOUSE_SHOTS=<folder>: screenshots of the interface with no photo, for the README
+    if let Some(dir) = std::env::var_os("GRAINHOUSE_SHOTS") {
+        glib::spawn_future_local(tour::shots(app.clone(), PathBuf::from(dir)));
+    }
 }
 
 fn shortcuts_dialog(window: &adw::ApplicationWindow) {
@@ -2435,7 +2439,22 @@ fn export_dialog(app: &Rc<App>) {
 
 const APP_ID: &str = "io.github.jegly.Grainhouse";
 
+/// The command-line tool, built into the same program so the models are only shipped once: run as
+/// `grainhouse-cli` (a link to this program) or `grainhouse --cli`.
+#[path = "bin/grainhouse-cli.rs"]
+#[allow(dead_code)]
+mod cli;
+
 fn main() -> glib::ExitCode {
+    let name = std::env::args().next().and_then(|a| std::path::Path::new(&a).file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
+    if name.starts_with("grainhouse-cli") {
+        cli::main();
+        return glib::ExitCode::SUCCESS;
+    }
+    if std::env::args().nth(1).as_deref() == Some("--cli") {
+        cli::run(std::env::args().skip(2).collect());
+        return glib::ExitCode::SUCCESS;
+    }
     let app = adw::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::NON_UNIQUE).build();
     app.connect_activate(build);
     app.connect_open(|app, _, _| build(app));
@@ -2502,6 +2521,107 @@ mod tour {
             }
         }
         false
+    }
+
+    fn find<T: IsA<gtk::Widget>>(root: &gtk::Widget) -> Option<T> {
+        if let Some(t) = root.downcast_ref::<T>() {
+            return Some(t.clone());
+        }
+        let mut c = root.first_child();
+        while let Some(w) = c {
+            if let Some(t) = find::<T>(&w) {
+                return Some(t);
+            }
+            c = w.next_sibling();
+        }
+        None
+    }
+
+    fn expand_all(root: &gtk::Widget) {
+        if let Some(e) = root.downcast_ref::<adw::ExpanderRow>() {
+            e.set_expanded(true);
+        }
+        let mut c = root.first_child();
+        while let Some(w) = c {
+            expand_all(&w);
+            c = w.next_sibling();
+        }
+    }
+
+    /// The interface with no photo open: the start screen, every panel group, presets and shortcuts.
+    pub async fn shots(a: Rc<App>, dir: PathBuf) {
+        let _ = std::fs::create_dir_all(&dir);
+        pause(1500).await;
+        let win: gtk::Widget = a.ui.window.clone().upcast();
+        let u = &a.ui;
+        u.histogram.set_visible(false);
+        for _ in 0..20 {
+            if snap(&win, &dir.join("window.png")) {
+                break;
+            }
+            pause(250).await;
+        }
+        // show the groups that normally wait for a photo, and open the expanders
+        u.raw_group.set_visible(true);
+        u.crop_group.set_visible(true);
+        pick(&u.effect, "Ghosts");
+        pick(&u.diffusion, "Black Mist 1/4");
+        pick(&u.local_kind, "Sky gradient");
+        u.sharpen.set_value(40.0);
+        u.vignette.set_value(-30.0);
+        a.update_rows();
+        let page: gtk::Widget = u.vibrance.row.ancestor(adw::PreferencesPage::static_type()).unwrap();
+        expand_all(&page);
+        pause(800).await;
+        let sw = u.vibrance.row.ancestor(gtk::ScrolledWindow::static_type()).and_downcast::<gtk::ScrolledWindow>().unwrap();
+        let adj = sw.vadjustment();
+        let side = u.histogram.parent().unwrap();
+        let mut n = 0;
+        let mut at = 0.0;
+        loop {
+            adj.set_value(at);
+            pause(400).await;
+            n += 1;
+            // the whole window (a widget alone loses the window's background); cropped to the panel later
+            let _ = &side;
+            snap(&win, &dir.join(format!("panel-{n}.png")));
+            if at >= adj.upper() - adj.page_size() - 1.0 || n > 12 {
+                break;
+            }
+            at = (at + adj.page_size() * 0.9).min(adj.upper() - adj.page_size());
+        }
+        if let Some(mb) = find::<gtk::MenuButton>(&win).filter(|m| m.label().as_deref() == Some("Presets")).or_else(|| {
+            // the first MenuButton is the main menu; find the one labelled Presets
+            let mut found = None;
+            let mut stack = vec![win.clone()];
+            while let Some(w) = stack.pop() {
+                if let Some(m) = w.downcast_ref::<gtk::MenuButton>() {
+                    if m.label().as_deref() == Some("Presets") {
+                        found = Some(m.clone());
+                    }
+                }
+                let mut c = w.first_child();
+                while let Some(x) = c {
+                    stack.push(x.clone());
+                    c = x.next_sibling();
+                }
+            }
+            found
+        }) {
+            mb.popup();
+            pause(800).await;
+            if let Some(pop) = mb.popover() {
+                let pw: gtk::Widget = pop.upcast();
+                snap(&pw, &dir.join("presets.png"));
+            }
+            mb.popdown();
+        }
+        let _ = WidgetExt::activate_action(&a.ui.window, "win.shortcuts", None);
+        pause(800).await;
+        snap(&win, &dir.join("shortcuts.png"));
+        if let Some(app) = a.ui.window.application() {
+            app.quit();
+        }
     }
 
     pub async fn run(a: Rc<App>, dir: PathBuf) {

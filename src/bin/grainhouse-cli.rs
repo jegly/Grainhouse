@@ -17,8 +17,12 @@ fn pick(list: &[&str], name: &str, what: &str) -> usize {
     })
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+pub fn main() {
+    run(std::env::args().skip(1).collect());
+}
+
+/// Runs with these arguments (without the program name).
+pub fn run(args: Vec<String>) {
     if args.iter().any(|a| a == "--films") {
         for f in film::films() {
             println!("{:8} {:14} {}", f.file, f.brand, f.name);

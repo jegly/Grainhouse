@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.jegly.Grainhouse</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <name>Grainhouse</name>
+  <summary>Film looks, AI effects and editing tools for your photos</summary>
+  <developer id="io.github.jegly">
+    <name>jegly</name>
+  </developer>
+  <description>
+    <p>
+      A photo editor with film looks, AI effects and proper editing tools, all in one window. Drop in a RAW file
+      or a JPEG, pick a film stock, push the light around, add an effect, and export.
+    </p>
+    <ul>
+      <li>White balance, exposure, shadows, highlights, tone curve, colour mixer, colour grading and Auto</li>
+      <li>Crop, straighten, lens corrections, noise reduction, sharpening and local adjustments with AI masks</li>
+      <li>153 film stocks, 24 creative looks, your own .cube LUTs and camera looks</li>
+      <li>30 effects, many using AI to find the people in your photo</li>
+      <li>Diffusion filters, halation, grain, light leaks and film frames</li>
+      <li>Real-ESRGAN upscaling and AI sharpening on export</li>
+    </ul>
+    <p>Everything runs on your own computer.</p>
+  </description>
+  <launchable type="desktop-id">io.github.jegly.Grainhouse.desktop</launchable>
+  <url type="homepage">https://github.com/jegly/grainhouse</url>
+  <url type="bugtracker">https://github.com/jegly/grainhouse/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/jegly/grainhouse/main/docs/window.png</image>
+      <caption>The main window</caption>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>Graphics</category>
+    <category>Photography</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.0" date="2026-10-24"/>
+  </releases>
+</component>

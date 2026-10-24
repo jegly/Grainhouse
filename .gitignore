@@ -2,3 +2,4 @@ target/
 testdata/
 
 CLAUDE.md
+.claude/
