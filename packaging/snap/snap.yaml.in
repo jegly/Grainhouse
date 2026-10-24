@@ -24,6 +24,8 @@ apps:
     plugs: [desktop, desktop-legacy, gsettings, home, removable-media, wayland, x11, opengl]
   cli:
     command: usr/bin/grainhouse --cli
+    # the same program as the window, so it needs the GNOME runtime's libraries too
+    command-chain: [snap/command-chain/desktop-launch]
     plugs: [home, removable-media]
 plugs:
   gnome-core26:
