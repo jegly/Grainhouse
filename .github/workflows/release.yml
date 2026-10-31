@@ -3,8 +3,8 @@
 # unless every step passes (tests included). Afterwards the new version and
 # checksum are committed to main (Cargo.toml, Cargo.lock and README.md).
 #
-# Built inside Ubuntu 26.04: the app needs libadwaita 1.6, and the .deb's
-# library dependencies (dpkg-shlibdeps) should match the release it targets.
+# Built inside the latest Ubuntu (ubuntu:latest): the .deb's library minimums
+# come from the build system (dpkg-shlibdeps), so they track the newest release.
 name: Release
 
 on:
@@ -37,7 +37,7 @@ jobs:
   release:
     name: Build, attest and publish .deb
     runs-on: ubuntu-latest
-    container: ubuntu:26.04
+    container: ubuntu:latest
     defaults:
       run:
         # Container jobs default to sh; the steps use bash.
@@ -56,7 +56,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates curl git gh python3 build-essential pkg-config dpkg-dev binutils \
             libgtk-4-dev libadwaita-1-dev libssl-dev
-          # Latest stable Rust (the app uses edition 2024).
+          # Latest stable Rust.
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
@@ -73,8 +73,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-26.04-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-26.04-
+          key: cargo-ubuntu-latest-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-ubuntu-latest-
 
       - name: Work out version
         id: ver
