@@ -85,6 +85,18 @@ Download the latest release from the [releases page](https://github.com/jegly/gr
 sudo apt install ./grainhouse_1.0.0_amd64.deb
 ```
 
+<!-- release-checksums:start -->
+| File | SHA-256 |
+|---|---|
+| `grainhouse_1.0.0_amd64.deb` | *sha256:edea0431ec9385e54e3201d81079c57dd8faccfa4e4e7aaac76a248206d0d7d2* |
+
+Verify a download:
+
+```bash
+sha256sum grainhouse_1.0.0_amd64.deb
+```
+<!-- release-checksums:end -->
+
 **Snap:**
 
 ```
