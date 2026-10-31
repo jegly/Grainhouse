@@ -23,6 +23,10 @@ jobs:
     name: Test and build .deb
     runs-on: ubuntu-latest
     container: ubuntu:26.04
+    defaults:
+      run:
+        # Container jobs default to sh; the steps use bash.
+        shell: bash
     timeout-minutes: 60
     steps:
       - name: Install build tools
