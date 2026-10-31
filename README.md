@@ -82,19 +82,21 @@ Download the latest release from the [releases page](https://github.com/jegly/gr
 **Ubuntu and Debian (.deb):**
 
 ```
-sudo apt install ./grainhouse_1.0.0_amd64.deb
+sudo apt install ./grainhouse_1.0.1_amd64.deb
 ```
 
 <!-- release-checksums:start -->
 | File | SHA-256 |
 |---|---|
-| `grainhouse_1.0.0_amd64.deb` | *sha256:edea0431ec9385e54e3201d81079c57dd8faccfa4e4e7aaac76a248206d0d7d2* |
+| `grainhouse_1.0.1_amd64.deb` | *sha256:cf29a35f86caabbda0e9ecd354cf18054a722f71745ee4034981a72a65ed9595* |
 
 Verify a download:
 
 ```bash
-sha256sum grainhouse_1.0.0_amd64.deb
+sha256sum grainhouse_1.0.1_amd64.deb
 ```
+
+The [build attestation](https://github.com/jegly/Grainhouse/attestations) shows it was built by this repository's release workflow (with the GitHub CLI: `gh attestation verify grainhouse_1.0.1_amd64.deb --repo jegly/Grainhouse`).
 <!-- release-checksums:end -->
 
 **Snap:**
