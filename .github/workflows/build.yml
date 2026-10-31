@@ -1,0 +1,62 @@
+# Runs the tests and builds the .deb on every push to main and every PR,
+# including Dependabot's. Nothing is published from here; see release.yml.
+#
+# Built inside Ubuntu 26.04: the app needs libadwaita 1.6, and the .deb's
+# library dependencies (dpkg-shlibdeps) should match the release it targets.
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and build .deb
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    timeout-minutes: 60
+    steps:
+      - name: Install build tools
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config dpkg-dev binutils \
+            libgtk-4-dev libadwaita-1-dev
+          # Latest stable Rust (the app uses edition 2024).
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-26.04-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-26.04-
+
+      - name: Tests
+        run: cargo test --release
+
+      - name: Build .deb
+        run: sh packaging/build-deb.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb
+          path: target/deb/*.deb
+          if-no-files-found: error
+          retention-days: 14
