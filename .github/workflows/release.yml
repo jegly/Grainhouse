@@ -51,7 +51,7 @@ jobs:
           apt-get update -qq
           apt-get install -y --no-install-recommends \
             ca-certificates curl git gh python3 build-essential pkg-config dpkg-dev binutils \
-            libgtk-4-dev libadwaita-1-dev
+            libgtk-4-dev libadwaita-1-dev libssl-dev
           # Latest stable Rust (the app uses edition 2024).
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
