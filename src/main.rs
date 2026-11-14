@@ -40,6 +40,9 @@ struct Ui {
     window: adw::ApplicationWindow,
     toasts: adw::ToastOverlay,
     picture: gtk::Picture,
+    /// holds the picture; scrolls when zoomed
+    zoom_scroll: gtk::ScrolledWindow,
+    zoom_label: gtk::Button,
     empty: adw::StatusPage,
     /// the "working" box over the photo, with what's happening
     status: gtk::Box,
@@ -166,6 +169,8 @@ struct App {
     /// undo history and where we are in it
     history: RefCell<Vec<Settings>>,
     history_pos: Cell<usize>,
+    /// zoom relative to fit-to-window (1 = fit)
+    zoom: Cell<f64>,
     history_token: Rc<Cell<u64>>,
     /// red, green, blue and brightness counts of the picture on screen
     hist: RefCell<Option<[Vec<f32>; 4]>>,
@@ -641,6 +646,45 @@ impl App {
         }
     }
 
+    /// Sets the zoom (1 = fit to the window, below 1 = smaller than the window) and lays the picture out.
+    fn set_zoom(&self, z: f64) {
+        self.zoom.set(z.clamp(0.1, 8.0));
+        self.apply_zoom();
+    }
+
+    fn apply_zoom(&self) {
+        let u = &self.ui;
+        let z = self.zoom.get();
+        let fit = (z - 1.0).abs() < 0.001;
+        u.zoom_label.set_label(&if fit { "Fit".to_string() } else { format!("{}%", (z * 100.0).round()) });
+        let paintable = u.picture.paintable();
+        let (vw, vh) = (u.zoom_scroll.width() as f64, u.zoom_scroll.height() as f64);
+        match paintable {
+            Some(p) if !fit && p.intrinsic_width() > 0 && p.intrinsic_height() > 0 && vw > 0.0 && vh > 0.0 => {
+                let (iw, ih) = (p.intrinsic_width() as f64, p.intrinsic_height() as f64);
+                let k = (vw / iw).min(vh / ih) * z;
+                u.zoom_scroll.set_hscrollbar_policy(gtk::PolicyType::Automatic);
+                u.zoom_scroll.set_vscrollbar_policy(gtk::PolicyType::Automatic);
+                u.picture.set_content_fit(gtk::ContentFit::Fill);
+                u.picture.set_hexpand(false);
+                u.picture.set_vexpand(false);
+                u.picture.set_halign(gtk::Align::Center);
+                u.picture.set_valign(gtk::Align::Center);
+                u.picture.set_size_request((iw * k).round() as i32, (ih * k).round() as i32);
+            }
+            _ => {
+                u.zoom_scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
+                u.zoom_scroll.set_vscrollbar_policy(gtk::PolicyType::Never);
+                u.picture.set_content_fit(gtk::ContentFit::Contain);
+                u.picture.set_hexpand(true);
+                u.picture.set_vexpand(true);
+                u.picture.set_halign(gtk::Align::Fill);
+                u.picture.set_valign(gtk::Align::Fill);
+                u.picture.set_size_request(-1, -1);
+            }
+        }
+    }
+
     /// Where the picture sits in the photo area, as (x, y, w, h) in pixels.
     fn shown_rect(&self) -> Option<(f64, f64, f64, f64)> {
         let p = self.ui.picture.paintable()?;
@@ -1079,6 +1123,7 @@ impl App {
         match result {
             Ok(img) => {
                 self.ui.picture.set_paintable(Some(&texture(&img)));
+                self.apply_zoom();
                 *self.hist.borrow_mut() = Some(histogram(&img));
                 self.ui.histogram.queue_draw();
                 self.ui.curve_area.queue_draw();
@@ -1215,8 +1260,10 @@ fn build(app: &adw::Application) {
     status.append(&status_sub);
     status.append(&status_pad);
     let info = gtk::Label::builder().halign(gtk::Align::Start).valign(gtk::Align::End).margin_start(12).margin_bottom(8).css_classes(["dim-label", "caption"]).build();
+    let zoom_scroll = gtk::ScrolledWindow::builder().child(&picture).hexpand(true).vexpand(true)
+        .hscrollbar_policy(gtk::PolicyType::Never).vscrollbar_policy(gtk::PolicyType::Never).build();
     let overlay = gtk::Overlay::new();
-    overlay.set_child(Some(&picture));
+    overlay.set_child(Some(&zoom_scroll));
     let crop_area = gtk::DrawingArea::builder().hexpand(true).vexpand(true).can_target(false).build();
     overlay.add_overlay(&crop_area);
     let histogram = gtk::DrawingArea::builder().height_request(96).margin_start(12).margin_end(12).margin_top(10).can_target(false).build();
@@ -1483,7 +1530,15 @@ fn build(app: &adw::Application) {
     header.pack_start(&open_button);
     header.pack_start(&undo);
     header.pack_start(&redo);
+    let zoom_out = gtk::Button::builder().icon_name("zoom-out-symbolic").tooltip_text("Zoom out (Ctrl+-)").css_classes(["flat"]).build();
+    let zoom_in = gtk::Button::builder().icon_name("zoom-in-symbolic").tooltip_text("Zoom in (Ctrl++)").css_classes(["flat"]).build();
+    let zoom_label = gtk::Button::builder().label("Fit").tooltip_text("Fit the photo to the window (Ctrl+0)").css_classes(["flat"]).width_request(64).build();
+    let zoom_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    zoom_box.append(&zoom_out);
+    zoom_box.append(&zoom_label);
+    zoom_box.append(&zoom_in);
     header.pack_start(&before);
+    header.pack_start(&zoom_box);
     let crop_button = gtk::ToggleButton::builder().label("Crop").tooltip_text("Crop, straighten and rotate (Enter when done)").sensitive(false).build();
     header.pack_start(&crop_button);
     header.pack_end(&export_button);
@@ -1513,6 +1568,8 @@ fn build(app: &adw::Application) {
             window: window.clone(),
             toasts,
             picture,
+            zoom_scroll: zoom_scroll.clone(),
+            zoom_label: zoom_label.clone(),
             empty,
             status,
             status_title,
@@ -1625,6 +1682,7 @@ fn build(app: &adw::Application) {
         grade: RefCell::new([[0.0; 2]; 3]),
         history: RefCell::new(Vec::new()),
         history_pos: Cell::new(0),
+        zoom: Cell::new(1.0),
         history_token: Rc::new(Cell::new(0)),
         hist: RefCell::new(None),
         show_hist: Cell::new(true),
@@ -1950,6 +2008,75 @@ fn build(app: &adw::Application) {
             }
         });
         window.add_action(&export_act);
+        for (name, factor) in [("zoom-in", 1.25f64), ("zoom-out", 0.8)] {
+            let act = gio::SimpleAction::new(name, None);
+            let a = Rc::downgrade(&app);
+            act.connect_activate(move |_, _| {
+                if let Some(a) = a.upgrade() {
+                    if !a.ui.crop_button.is_active() {
+                        a.set_zoom(a.zoom.get() * factor);
+                    }
+                }
+            });
+            window.add_action(&act);
+        }
+        let fit_act = gio::SimpleAction::new("zoom-fit", None);
+        {
+            let a = Rc::downgrade(&app);
+            fit_act.connect_activate(move |_, _| {
+                if let Some(a) = a.upgrade() {
+                    a.set_zoom(1.0);
+                }
+            });
+        }
+        window.add_action(&fit_act);
+        application.set_accels_for_action("win.zoom-in", &["<Ctrl>plus", "<Ctrl>equal", "<Ctrl>KP_Add"]);
+        application.set_accels_for_action("win.zoom-out", &["<Ctrl>minus", "<Ctrl>KP_Subtract"]);
+        application.set_accels_for_action("win.zoom-fit", &["<Ctrl>0", "<Ctrl>KP_0"]);
+        for (btn, name) in [(&zoom_in, "win.zoom-in"), (&zoom_out, "win.zoom-out"), (&zoom_label, "win.zoom-fit")] {
+            btn.set_action_name(Some(name));
+        }
+        // Ctrl + wheel zooms; dragging a zoomed photo moves it
+        {
+            let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+            scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let a = Rc::downgrade(&app);
+            scroll.connect_scroll(move |c, _, dy| {
+                let ctrl = c.current_event_state().contains(gdk::ModifierType::CONTROL_MASK);
+                if !ctrl {
+                    return glib::Propagation::Proceed;
+                }
+                if let Some(a) = a.upgrade() {
+                    if !a.ui.crop_button.is_active() {
+                        a.set_zoom(a.zoom.get() * if dy < 0.0 { 1.1 } else { 1.0 / 1.1 });
+                    }
+                }
+                glib::Propagation::Stop
+            });
+            zoom_scroll.add_controller(scroll);
+            let drag = gtk::GestureDrag::new();
+            let start = Rc::new(Cell::new((0.0f64, 0.0f64)));
+            {
+                let (s, a) = (start.clone(), Rc::downgrade(&app));
+                drag.connect_drag_begin(move |_, _, _| {
+                    if let Some(a) = a.upgrade() {
+                        s.set((a.ui.zoom_scroll.hadjustment().value(), a.ui.zoom_scroll.vadjustment().value()));
+                    }
+                });
+            }
+            {
+                let (s, a) = (start.clone(), Rc::downgrade(&app));
+                drag.connect_drag_update(move |_, dx, dy| {
+                    if let Some(a) = a.upgrade() {
+                        if (a.zoom.get() - 1.0).abs() > 0.001 && !a.ui.crop_button.is_active() {
+                            a.ui.zoom_scroll.hadjustment().set_value(s.get().0 - dx);
+                            a.ui.zoom_scroll.vadjustment().set_value(s.get().1 - dy);
+                        }
+                    }
+                });
+            }
+            zoom_scroll.add_controller(drag);
+        }
         application.set_accels_for_action("win.open", &["<Ctrl>o"]);
         application.set_accels_for_action("win.export", &["<Ctrl>e"]);
         application.set_accels_for_action("win.undo", &["<Ctrl>z"]);
@@ -2034,6 +2161,9 @@ fn build(app: &adw::Application) {
             let Some(a) = a.upgrade() else { return };
             b.set_label(if b.is_active() { "Done" } else { "Crop" });
             a.ui.crop_area.set_can_target(b.is_active());
+            if b.is_active() {
+                a.set_zoom(1.0);
+            }
             if b.is_active() {
                 b.add_css_class("suggested-action");
             } else {
