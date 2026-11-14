@@ -10,8 +10,6 @@ description: |
   looks, 30 effects (many using AI to find the people in your photo), diffusion
   filters, film frames, and Real-ESRGAN upscaling on export.
 
-  Everything runs on your own computer.
-
   To open photos on USB drives or SD cards, run:
   sudo snap connect grainhouse:removable-media
 license: AGPL-3.0-only

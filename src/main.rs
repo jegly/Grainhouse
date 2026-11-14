@@ -2754,6 +2754,8 @@ fn shortcuts_dialog(window: &adw::ApplicationWindow) {
         ("Ctrl+E", "Export"),
         ("Ctrl+Z", "Undo"),
         ("Ctrl+Shift+Z or Ctrl+Y", "Redo"),
+        ("Ctrl++ and Ctrl+-", "Zoom in and out (Ctrl+wheel too)"),
+        ("Ctrl+0", "Fit the photo to the window"),
         ("B", "Before and after"),
         ("C", "Crop, straighten and rotate"),
         ("Enter or Esc", "Finish cropping"),

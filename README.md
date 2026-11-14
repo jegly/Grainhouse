@@ -2,9 +2,7 @@
 
 A photo editor for Linux with film looks, AI effects and proper editing tools, all in one window.
 
-Drop in a RAW file or a JPEG, pick a film stock, push the light around, add an effect, and export. It does the everyday editing you'd do in Lightroom (white balance, tone curve, colour mixer, masks, noise reduction, lens corrections) and then the things Lightroom doesn't: 238 film stocks, camera looks, AI effects that find the people in your photo, diffusion filters, film frames, and Real-ESRGAN upscaling on export.
-
-Everything runs on your own computer. No account, no cloud, no subscription.
+Drop in a RAW file or a JPEG, pick a film stock, push the light around, add an effect, and export. It does the everyday editing you'd do in Lightroom (white balance, tone curve, colour mixer and wheels, masks, healing, noise reduction, lens corrections) and then the things Lightroom doesn't: 238 film stocks, camera looks, AI effects that find the people in your photo, diffusion filters, film frames, and Real-ESRGAN upscaling on export.
 
 ![Grainhouse](docs/window.png)
 
@@ -16,9 +14,12 @@ Everything runs on your own computer. No account, no cloud, no subscription.
 - **Tone curve**: drag the points, for overall brightness or red, green and blue on their own
 - **Crop**: drag on the photo, aspect ratios (1:1, 3:2, 4:3, 5:4, 16:9, 65:24 XPan), straighten and rotate
 - **Lens corrections**: distortion, vertical and horizontal perspective, and defringe for purple and green edges
-- **Colour**: vibrance, saturation, a colour mixer (hue, saturation and brightness for eight colours) and colour grading for shadows, midtones and highlights
+- **Colour**: vibrance, saturation, a colour mixer (hue, saturation and brightness for eight colours), **three colour wheels** for shadows, midtones and highlights plus a global one (with a brightness slider for each range), **point colour** (click a colour in the photo and change just that colour) and a **black and white mixer** that sets how bright each colour comes out
 - **Detail**: clarity, texture, dehaze, sharpening with radius and masking, noise reduction for brightness and colour, and vignette with midpoint and feather
-- **Local adjustment**: change just part of the picture through a mask: the subject or the background (found by AI), a sky or ground gradient, or a radial area. Each has its own exposure, contrast, saturation and warmth
+- **Local adjustment**: a quick mask: the subject or the background (found by AI), a sky or ground gradient, or a radial area, with its own exposure, contrast, saturation and warmth
+- **Masks**: change just part of the photo. Paint with a brush (size, feather, flow, density, erase), drop linear and radial gradients with pins you drag on the photo, or select by brightness, colour, sky, subject or background. Join the parts with Add, Subtract or Intersect, invert any part, and set 17 adjustments for each mask (temp, tint, exposure, contrast, highlights, shadows, whites, blacks, texture, clarity, dehaze, hue, saturation, sharpness, noise, moire and defringe) plus an overall amount. The sky selection is a simple guess from colour and position, not an AI model
+- **Retouch**: click a spot to heal it (matches the light), clone it, or remove it with the best patch from nearby
+- **Zoom**: Ctrl+wheel or the buttons zoom in and out, down to smaller than the window, and you drag to move around
 
 ![The side panel](docs/panels.png)
 
@@ -29,7 +30,9 @@ Everything runs on your own computer. No account, no cloud, no subscription.
 - **Your own LUTs**: add `.cube` files, or a whole folder of them, and they show up under My LUTs. They're applied in full, so they look exactly as they should
 - **Camera looks**: the colour and character of other cameras, from a Leica CCD or a Ricoh GR to a 2000s compact, a disposable, a Holga and a Game Boy Camera. With an optional orange date stamp in the corner, taken from when the photo was shot
 - **Diffusion filters**: Black Mist, White Mist and Glimmer, with strength, glow size, highlight bloom and warmth
-- **Develop**: CineStill-style halation, film grain and light leaks
+- **Halation**: CineStill-style red glow round bright lights, with strength, glow size, threshold and colour
+- **Grain and light leaks**: film grain, and light leaks where you choose the colour, edge, number, strength and size
+- **Eye buttons** on the diffusion, halation and grain groups hide an effect without losing its settings, so you can compare
 - **Frames**: thin or gallery white border, black border, Polaroid, Instax, a 35mm film strip with sprocket holes and edge printing, a 6x6 negative, and cinema bars
 
 ### AI effects
@@ -54,10 +57,15 @@ The effects find the people (or vehicles, animals, anything) in your photo with 
 | Crowd remover, Trails | Drop in several shots from a tripod: people walking through vanish, or stay as fading trails |
 | Double exposure | Drop in two photos: the people in the first are filled with the second |
 
+### Credits for the looks
+
+The 22 looks in the Spektrafilm group come from [spektrafilm](https://github.com/andreavolpato/spektrafilm) by Andrea Volpato, which models film and print stocks from the manufacturers' data sheets. The looks were modified (exposure set to mid grey, slide film scanned, the tone curve softened and fitted to a curve and a matrix) and stay under CC BY-SA 4.0. See `NOTICE` and `SPEKTRAFILM_LICENSE.txt`.
+
 The first time an effect runs it takes a second or two to find people, then changes are quick. If it can't find anyone it says so and suggests what to try.
 
 ### Export
 
+- **Presets** for Instagram (post 4:5, square, story or reel), Facebook and X, web and print, and a canvas that fits the photo into a social media frame, padded white, black or grey, or cropped to fill
 - JPEG, PNG or TIFF, at full size, a long edge in pixels, or a percentage
 - **Real-ESRGAN upscaling** at 2x or 4x, with a fast model, a fast denoising model, or the slower x4plus for the best quality. The dialog tells you roughly how long it will take
 - **AI sharpening** (upscale and back down) or smart sharpening

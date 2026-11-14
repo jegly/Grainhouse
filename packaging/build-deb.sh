@@ -19,6 +19,7 @@ install -Dm644 data/$ID.svg "$ROOT/usr/share/icons/hicolor/scalable/apps/$ID.svg
 install -Dm644 data/$ID.metainfo.xml "$ROOT/usr/share/metainfo/$ID.metainfo.xml"
 install -Dm644 LICENSE "$ROOT/usr/share/doc/grainhouse/copyright"
 install -Dm644 NOTICE "$ROOT/usr/share/doc/grainhouse/NOTICE"
+install -Dm644 SPEKTRAFILM_LICENSE.txt "$ROOT/usr/share/doc/grainhouse/SPEKTRAFILM_LICENSE.txt"
 install -Dm644 README.md "$ROOT/usr/share/doc/grainhouse/README.md"
 
 # the shared libraries the programs need, worked out by dpkg-shlibdeps
