@@ -138,6 +138,12 @@ struct Ui {
     eye_develop: gtk::ToggleButton,
     grain: adw::ComboRow,
     leak: adw::SwitchRow,
+    leak_colour: adw::ComboRow,
+    leak_edge: adw::ComboRow,
+    leak_count: adw::ComboRow,
+    leak_strength: Slider,
+    leak_size: Slider,
+    leak_variant: Slider,
     mono: adw::SwitchRow,
 }
 
@@ -364,6 +370,12 @@ impl App {
         let dev_shown = u.eye_develop.is_active();
         s.develop.grain = if dev_shown { u.grain.selected() as usize } else { 0 };
         s.develop.light_leak = u.leak.is_active() && dev_shown;
+        s.develop.leak_colour = u.leak_colour.selected() as usize;
+        s.develop.leak_edge = u.leak_edge.selected() as usize;
+        s.develop.leak_count = u.leak_count.selected() as usize;
+        s.develop.leak_strength = (u.leak_strength.value() / 100.0) as f32;
+        s.develop.leak_size = (u.leak_size.value() / 100.0) as f32;
+        s.develop.leak_variant = u.leak_variant.value() as u32;
         s.develop.monochrome = u.mono.is_active();
         s
     }
@@ -409,6 +421,12 @@ impl App {
         }
         for r in [&u.hal_strength, &u.hal_size, &u.hal_threshold, &u.hal_warmth] {
             r.set_visible(u.halation.is_active());
+        }
+        for r in [&u.leak_colour, &u.leak_edge, &u.leak_count] {
+            r.set_visible(u.leak.is_active());
+        }
+        for r in [&u.leak_strength, &u.leak_size, &u.leak_variant] {
+            r.set_visible(u.leak.is_active());
         }
         u.cam_strength.set_sensitive(u.camera.selected() != 0);
         u.film.set_sensitive(u.brand.selected() != 0);
@@ -892,6 +910,12 @@ impl App {
         u.eye_develop.set_active(true);
         u.grain.set_selected(s.develop.grain as u32);
         u.leak.set_active(s.develop.light_leak);
+        u.leak_colour.set_selected(s.develop.leak_colour as u32);
+        u.leak_edge.set_selected(s.develop.leak_edge as u32);
+        u.leak_count.set_selected(s.develop.leak_count as u32);
+        pc(&u.leak_strength, s.develop.leak_strength);
+        pc(&u.leak_size, s.develop.leak_size);
+        u.leak_variant.set_value(s.develop.leak_variant as f64);
         u.mono.set_active(s.develop.monochrome);
         u.frame.set_selected(s.frame as u32);
         *self.geometry.borrow_mut() = s.geometry;
@@ -1496,12 +1520,25 @@ fn build(app: &adw::Application) {
 
     let dev_group = adw::PreferencesGroup::builder().title("Grain and light leaks").build();
     let grain = combo("Grain", &develop::GRAIN_NAMES, 0);
-    let leak = switch("Light leak", "Random each photo");
+    let leak = switch("Light leak", "Random each photo unless you choose below");
+    let leak_colour = combo("Leak colour", &develop::LEAK_COLOUR_NAMES, 0);
+    let leak_edge = combo("Leak edge", &develop::LEAK_EDGE_NAMES, 0);
+    let leak_count = combo("Number of leaks", &develop::LEAK_COUNT_NAMES, 0);
+    let leak_strength = slider("Leak strength", 0.0, 250.0, 1.0, 100.0, 0);
+    let leak_size = slider("Leak size", 30.0, 250.0, 1.0, 100.0, 0);
+    let leak_variant = slider("Leak variation", 0.0, 99.0, 1.0, 0.0, 0);
+    leak_variant.set_subtitle("0 is this photo's own pattern; other numbers give other patterns");
     let mono = switch("Black & white grain", "No colour in the grain");
     let eye_develop = eye_button("Show or hide grain and light leaks");
     dev_group.set_header_suffix(Some(&eye_develop));
     dev_group.add(&grain);
     dev_group.add(&leak);
+    for r in [&leak_colour, &leak_edge, &leak_count] {
+        dev_group.add(r);
+    }
+    for r in [&leak_strength, &leak_size, &leak_variant] {
+        dev_group.add(&r.row);
+    }
     dev_group.add(&mono);
 
     let page = adw::PreferencesPage::new();
@@ -1662,6 +1699,12 @@ fn build(app: &adw::Application) {
             eye_develop,
             grain,
             leak,
+            leak_colour,
+            leak_edge,
+            leak_count,
+            leak_strength,
+            leak_size,
+            leak_variant,
             mono,
         },
         jobs: job_tx,
@@ -1696,7 +1739,7 @@ fn build(app: &adw::Application) {
 
     // any setting change re-renders
     let u = &app.ui;
-    for row in [&u.camera, &u.film, &u.target, &u.model, &u.look, &u.face, &u.colour, &u.glow, &u.diffusion, &u.grain, &u.frame, &u.local_kind] {
+    for row in [&u.camera, &u.film, &u.target, &u.model, &u.look, &u.face, &u.colour, &u.glow, &u.diffusion, &u.grain, &u.frame, &u.local_kind, &u.leak_colour, &u.leak_edge, &u.leak_count] {
         let a = Rc::downgrade(&app);
         row.connect_selected_notify(move |_| {
             if let Some(a) = a.upgrade() {
@@ -1706,7 +1749,7 @@ fn build(app: &adw::Application) {
     }
     for row in [
         &u.exposure, &u.contrast, &u.tint, &u.shadows, &u.highlights, &u.whites, &u.blacks, &u.cam_strength, &u.strength, &u.amount, &u.diff_strength,
-        &u.diff_size, &u.bloom, &u.warmth, &u.hal_strength, &u.hal_size, &u.hal_threshold, &u.hal_warmth, &u.vibrance, &u.saturation, &u.balance, &u.clarity, &u.texture, &u.dehaze, &u.sharpen, &u.vignette,
+        &u.diff_size, &u.bloom, &u.warmth, &u.hal_strength, &u.hal_size, &u.hal_threshold, &u.hal_warmth, &u.leak_strength, &u.leak_size, &u.leak_variant, &u.vibrance, &u.saturation, &u.balance, &u.clarity, &u.texture, &u.dehaze, &u.sharpen, &u.vignette,
         &u.sharpen_radius, &u.masking, &u.noise, &u.colour_noise, &u.defringe, &u.vig_mid, &u.vig_feather, &u.local_size, &u.local_feather,
         &u.local_exposure, &u.local_contrast, &u.local_saturation, &u.local_warmth,
     ] {

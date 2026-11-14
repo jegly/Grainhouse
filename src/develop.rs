@@ -5,6 +5,9 @@ use crate::img::{pack_f, unpack, Image};
 use crate::util::{box_blur, screen, Rng};
 use rayon::prelude::*;
 
+pub const LEAK_COLOUR_NAMES: [&str; 5] = ["Random", "Red", "Orange", "Amber", "Pink"];
+pub const LEAK_EDGE_NAMES: [&str; 5] = ["Random", "Left", "Right", "Top", "Bottom"];
+pub const LEAK_COUNT_NAMES: [&str; 4] = ["Random", "1", "2", "3"];
 pub const GRAIN_NAMES: [&str; 5] = ["Off", "Fine", "Medium", "Heavy", "Coarse"];
 
 #[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
@@ -22,6 +25,16 @@ pub struct DevelopOptions {
     /// 0 off, 1 fine, 2 medium, 3 heavy, 4 coarse
     pub grain: usize,
     pub light_leak: bool,
+    /// 0 random, else an entry of LEAK_COLOUR_NAMES
+    pub leak_colour: usize,
+    /// 0 random, 1 left, 2 right, 3 top, 4 bottom
+    pub leak_edge: usize,
+    /// 0 random, else 1..3 glows
+    pub leak_count: usize,
+    pub leak_strength: f32,
+    pub leak_size: f32,
+    /// 0 = the photo's own pattern; other numbers give other patterns
+    pub leak_variant: u32,
     /// Black and white film: grain without colour.
     pub monochrome: bool,
     pub seed: u64,
@@ -37,6 +50,12 @@ impl Default for DevelopOptions {
             halation_warmth: 0.0,
             grain: 0,
             light_leak: false,
+            leak_colour: 0,
+            leak_edge: 0,
+            leak_count: 0,
+            leak_strength: 1.0,
+            leak_size: 1.0,
+            leak_variant: 0,
             monochrome: false,
             seed: 0,
         }
@@ -116,7 +135,16 @@ pub fn develop(img: &mut Image, opt: &DevelopOptions) {
     let halo_tint = [HALO_TINT[0], (HALO_TINT[1] + 0.2 * wm).clamp(0.0, 1.0), (HALO_TINT[2] + 0.1 * wm).clamp(0.0, 1.0)];
 
     // light leak: 1-3 soft blobs just outside one edge, stretched along it, worked out on a coarse grid
-    let leak = if opt.light_leak { Some(leak_map(w, h, &mut rnd, noise_seed)) } else { None };
+    let leak = if opt.light_leak {
+        if opt.leak_variant == 0 {
+            Some(leak_map(w, h, &mut rnd, noise_seed, opt))
+        } else {
+            let mut other = Rng::new(opt.seed ^ (opt.leak_variant as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            Some(leak_map(w, h, &mut other, noise_seed ^ opt.leak_variant as i32, opt))
+        }
+    } else {
+        None
+    };
 
     // grain from a tile (luma plus two colour channels), shifted per photo
     let tile_x = rnd.below(GRAIN_TILE as u32) as usize;
@@ -197,23 +225,43 @@ pub fn develop(img: &mut Image, opt: &DevelopOptions) {
 }
 
 /// The leak's colour maps on a coarse grid: (r, g, b, grid w, grid h).
-fn leak_map(w: usize, h: usize, rnd: &mut Rng, noise_seed: i32) -> (Vec<f32>, Vec<f32>, Vec<f32>, usize, usize) {
-    let blobs = 1 + rnd.below(3) as usize;
-    let vertical = rnd.below(4) == 0;
-    let far = rnd.below(2) == 0;
+fn leak_map(w: usize, h: usize, rnd: &mut Rng, noise_seed: i32, opt: &DevelopOptions) -> (Vec<f32>, Vec<f32>, Vec<f32>, usize, usize) {
+    // the random draws are always made, in the same order, so "Random" gives the same pattern as before
+    let mut blobs = 1 + rnd.below(3) as usize;
+    let mut vertical = rnd.below(4) == 0;
+    let mut far = rnd.below(2) == 0;
+    if opt.leak_count > 0 {
+        blobs = opt.leak_count.min(3);
+    }
+    match opt.leak_edge {
+        1 => (vertical, far) = (false, false),
+        2 => (vertical, far) = (false, true),
+        3 => (vertical, far) = (true, false),
+        4 => (vertical, far) = (true, true),
+        _ => {}
+    }
+    let size = opt.leak_size.clamp(0.2, 3.0);
     let (edge, along) = if vertical { (h as f32, w as f32) } else { (w as f32, h as f32) };
     let mut spec = Vec::new();
     for i in 0..blobs {
         let mut across = edge * (-0.03 + rnd.float() * 0.1);
         let pos = along * (0.1 + rnd.float() * 0.8);
-        let s_across = edge * (0.14 + rnd.float() * 0.2);
-        let s_along = along * (0.22 + rnd.float() * 0.35);
+        let s_across = edge * (0.14 + rnd.float() * 0.2) * size;
+        let s_along = along * (0.22 + rnd.float() * 0.35) * size;
         if far {
             across = edge - 1.0 - across;
         }
         let (bx, by, sx, sy) = if vertical { (pos, across, s_along, s_across) } else { (across, pos, s_across, s_along) };
-        let amp = if i == 0 { 0.42 + rnd.float() * 0.16 } else { 0.22 + rnd.float() * 0.18 };
-        let c = LEAK_COLOURS[if rnd.below(10) == 0 { 3 } else { rnd.below(3) as usize }];
+        let amp = (if i == 0 { 0.42 + rnd.float() * 0.16 } else { 0.22 + rnd.float() * 0.18 }) * opt.leak_strength.clamp(0.0, 3.0);
+        let random_colour = LEAK_COLOURS[if rnd.below(10) == 0 { 3 } else { rnd.below(3) as usize }];
+        // named colours: Red, Orange, Amber, Pink
+        let c = match opt.leak_colour {
+            1 => LEAK_COLOURS[0],
+            2 => LEAK_COLOURS[1],
+            3 => LEAK_COLOURS[2],
+            4 => LEAK_COLOURS[3],
+            _ => random_colour,
+        };
         let col = [((c >> 16) & 255) as f32 / 255.0, ((c >> 8) & 255) as f32 / 255.0, (c & 255) as f32 / 255.0];
         spec.push((bx, by, sx, sy, amp, col));
     }
