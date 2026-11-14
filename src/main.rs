@@ -21,6 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+mod maskui;
+
 const PREVIEW: usize = 1800;
 
 const ASPECTS: [&str; 8] = ["Free", "Original", "1:1", "3:2", "4:3", "5:4", "16:9", "65:24 (XPan)"];
@@ -42,6 +44,7 @@ struct Ui {
     picture: gtk::Picture,
     /// holds the picture; scrolls when zoomed
     zoom_scroll: gtk::ScrolledWindow,
+    mui: maskui::MaskUi,
     zoom_label: gtk::Button,
     empty: adw::StatusPage,
     /// the "working" box over the photo, with what's happening
@@ -194,6 +197,12 @@ struct App {
     history_pos: Cell<usize>,
     /// zoom relative to fit-to-window (1 = fit)
     zoom: Cell<f64>,
+    /// mask layers, the selected layer and part, the brush cursor and a pin being dragged
+    masks: RefCell<Vec<grainhouse::masks::MaskLayer>>,
+    mask_sel: Cell<usize>,
+    comp_sel: Cell<usize>,
+    brush_hover: Cell<Option<(f64, f64)>>,
+    pin_drag: Cell<Option<usize>>,
     history_token: Rc<Cell<u64>>,
     /// red, green, blue and brightness counts of the picture on screen
     hist: RefCell<Option<[Vec<f32>; 4]>>,
@@ -369,6 +378,7 @@ impl App {
             feather: pc(&u.local_feather),
         };
         s.frame = u.frame.selected() as usize;
+        s.masks = self.masks.borrow().clone();
         s.raw.tint = (u.tint.value() / 100.0) as f32;
         s.raw.shadows = (u.shadows.value() / 100.0) as f32;
         s.raw.highlights = (u.highlights.value() / 100.0) as f32;
@@ -988,6 +998,8 @@ impl App {
         u.leak_variant.set_value(s.develop.leak_variant as f64);
         u.mono.set_active(s.develop.monochrome);
         u.frame.set_selected(s.frame as u32);
+        *self.masks.borrow_mut() = s.masks.clone();
+        self.mask_refresh();
         *self.geometry.borrow_mut() = s.geometry;
         u.straighten.set_value(s.geometry.angle as f64);
         if !s.geometry.is_cropped() {
@@ -1364,6 +1376,9 @@ fn build(app: &adw::Application) {
     overlay.set_child(Some(&zoom_scroll));
     let crop_area = gtk::DrawingArea::builder().hexpand(true).vexpand(true).can_target(false).build();
     overlay.add_overlay(&crop_area);
+    let mui = maskui::build();
+    overlay.add_overlay(&mui.area);
+    let mask_group = mui.group.clone();
     let histogram = gtk::DrawingArea::builder().height_request(96).margin_start(12).margin_end(12).margin_top(10).can_target(false).build();
     overlay.add_overlay(&empty);
     overlay.add_overlay(&status);
@@ -1502,7 +1517,7 @@ fn build(app: &adw::Application) {
     colour_group.add(&point_row);
 
     // black and white: the sliders set how bright each colour comes out, like coloured filters
-    let bw_row = adw::ExpanderRow::builder().title("Black & white").subtitle("Turn the photo to black and white and mix how bright each colour is").build();
+    let bw_row = adw::ExpanderRow::builder().use_markup(false).title("Black & white").subtitle("Turn the photo to black and white and mix how bright each colour is").build();
     let bw_on = switch("Black & white", "Remove the colour");
     bw_row.add_row(&bw_on);
     let mut bw_mix: Vec<Slider> = Vec::new();
@@ -1668,7 +1683,7 @@ fn build(app: &adw::Application) {
 
     let page = adw::PreferencesPage::new();
     for g in [
-        &raw_group, &curve_group, &crop_group, &lens_fix_group, &camera_group, &film_group, &colour_group, &detail_group, &local_group, &fx_group, &lens_group,
+        &raw_group, &curve_group, &crop_group, &lens_fix_group, &camera_group, &film_group, &colour_group, &detail_group, &local_group, &mask_group, &fx_group, &lens_group,
         &hal_group, &dev_group, &frame_group,
     ] {
         page.add(g);
@@ -1731,6 +1746,7 @@ fn build(app: &adw::Application) {
             toasts,
             picture,
             zoom_scroll: zoom_scroll.clone(),
+            mui,
             zoom_label: zoom_label.clone(),
             empty,
             status,
@@ -1865,6 +1881,11 @@ fn build(app: &adw::Application) {
         history: RefCell::new(Vec::new()),
         history_pos: Cell::new(0),
         zoom: Cell::new(1.0),
+        masks: RefCell::new(Vec::new()),
+        mask_sel: Cell::new(0),
+        comp_sel: Cell::new(0),
+        brush_hover: Cell::new(None),
+        pin_drag: Cell::new(None),
         history_token: Rc::new(Cell::new(0)),
         hist: RefCell::new(None),
         show_hist: Cell::new(true),
@@ -1875,6 +1896,8 @@ fn build(app: &adw::Application) {
     });
     *app.me.borrow_mut() = Rc::downgrade(&app);
     app.update_rows();
+    maskui::connect(&app);
+    app.mask_refresh();
 
     // any setting change re-renders
     let u = &app.ui;
@@ -3269,6 +3292,28 @@ mod tour {
             pick(&u.local_kind, "Subject (AI)");
             u.local_exposure.set_value(0.8);
             u.local_saturation.set_value(30.0);
+        });
+        step!("masks-radial", {
+            pick(&u.local_kind, "Off");
+            a.comp_add(grainhouse::masks::RADIAL);
+            a.with_comp_tour(|c| {
+                c.a = [0.5, 0.45, 0.3, 0.4];
+                c.invert = true;
+            });
+            a.ui.mui.adjust[2].set_value(-70.0);
+            a.ui.mui.adjust[12].set_value(-40.0);
+            a.ui.mui.edit.set_active(true);
+        });
+        step!("masks-brush", {
+            a.comp_add(grainhouse::masks::BRUSH);
+            a.with_comp_tour(|c| {
+                c.strokes.push(grainhouse::masks::Stroke { pts: vec![[0.2, 0.8], [0.4, 0.85], [0.6, 0.8]], size: 0.06, feather: 0.5, flow: 0.9, erase: false });
+                c.mode = 0;
+            });
+            a.ui.mui.adjust[0].set_value(60.0);
+            a.ui.mui.adjust[3].set_value(30.0);
+            a.mask_refresh();
+            a.ui.mui.edit.set_active(false);
         });
         step!("noise-sharpen", {
             u.noise.set_value(50.0);
