@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod maskui;
+mod retouchui;
 
 const PREVIEW: usize = 1800;
 
@@ -45,6 +46,7 @@ struct Ui {
     /// holds the picture; scrolls when zoomed
     zoom_scroll: gtk::ScrolledWindow,
     mui: maskui::MaskUi,
+    rui: retouchui::RetouchUi,
     zoom_label: gtk::Button,
     empty: adw::StatusPage,
     /// the "working" box over the photo, with what's happening
@@ -203,6 +205,8 @@ struct App {
     comp_sel: Cell<usize>,
     brush_hover: Cell<Option<(f64, f64)>>,
     pin_drag: Cell<Option<usize>>,
+    /// healing and clone spots
+    spots: RefCell<Vec<grainhouse::retouch::Spot>>,
     history_token: Rc<Cell<u64>>,
     /// red, green, blue and brightness counts of the picture on screen
     hist: RefCell<Option<[Vec<f32>; 4]>>,
@@ -379,6 +383,7 @@ impl App {
         };
         s.frame = u.frame.selected() as usize;
         s.masks = self.masks.borrow().clone();
+        s.retouch = self.spots.borrow().clone();
         s.raw.tint = (u.tint.value() / 100.0) as f32;
         s.raw.shadows = (u.shadows.value() / 100.0) as f32;
         s.raw.highlights = (u.highlights.value() / 100.0) as f32;
@@ -999,6 +1004,8 @@ impl App {
         u.mono.set_active(s.develop.monochrome);
         u.frame.set_selected(s.frame as u32);
         *self.masks.borrow_mut() = s.masks.clone();
+        *self.spots.borrow_mut() = s.retouch.clone();
+        self.ui.rui.area.queue_draw();
         self.mask_refresh();
         *self.geometry.borrow_mut() = s.geometry;
         u.straighten.set_value(s.geometry.angle as f64);
@@ -1379,6 +1386,9 @@ fn build(app: &adw::Application) {
     let mui = maskui::build();
     overlay.add_overlay(&mui.area);
     let mask_group = mui.group.clone();
+    let rui = retouchui::build();
+    overlay.add_overlay(&rui.area);
+    let retouch_group = rui.group.clone();
     let histogram = gtk::DrawingArea::builder().height_request(96).margin_start(12).margin_end(12).margin_top(10).can_target(false).build();
     overlay.add_overlay(&empty);
     overlay.add_overlay(&status);
@@ -1683,7 +1693,7 @@ fn build(app: &adw::Application) {
 
     let page = adw::PreferencesPage::new();
     for g in [
-        &raw_group, &curve_group, &crop_group, &lens_fix_group, &camera_group, &film_group, &colour_group, &detail_group, &local_group, &mask_group, &fx_group, &lens_group,
+        &raw_group, &curve_group, &crop_group, &lens_fix_group, &camera_group, &film_group, &colour_group, &detail_group, &local_group, &mask_group, &retouch_group, &fx_group, &lens_group,
         &hal_group, &dev_group, &frame_group,
     ] {
         page.add(g);
@@ -1747,6 +1757,7 @@ fn build(app: &adw::Application) {
             picture,
             zoom_scroll: zoom_scroll.clone(),
             mui,
+            rui,
             zoom_label: zoom_label.clone(),
             empty,
             status,
@@ -1886,6 +1897,7 @@ fn build(app: &adw::Application) {
         comp_sel: Cell::new(0),
         brush_hover: Cell::new(None),
         pin_drag: Cell::new(None),
+        spots: RefCell::new(Vec::new()),
         history_token: Rc::new(Cell::new(0)),
         hist: RefCell::new(None),
         show_hist: Cell::new(true),
@@ -1897,6 +1909,7 @@ fn build(app: &adw::Application) {
     *app.me.borrow_mut() = Rc::downgrade(&app);
     app.update_rows();
     maskui::connect(&app);
+    retouchui::connect(&app);
     app.mask_refresh();
 
     // any setting change re-renders

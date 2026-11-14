@@ -94,6 +94,8 @@ pub struct Settings {
     pub local: crate::local::Local,
     /// mask layers (brush, gradients, ranges, AI) with their own adjustments
     pub masks: Vec<crate::masks::MaskLayer>,
+    /// healing and clone spots, applied first
+    pub retouch: Vec<crate::retouch::Spot>,
 }
 
 impl Default for Settings {
@@ -121,6 +123,7 @@ impl Default for Settings {
             frame: 0,
             local: crate::local::Local::default(),
             masks: Vec::new(),
+            retouch: Vec::new(),
         }
     }
 }
@@ -378,6 +381,7 @@ impl Session {
     /// Renders the edit with the long side at most `long` pixels (usize::MAX for full size).
     pub fn render(&self, s: &Settings, long: usize) -> Result<Image, String> {
         let mut img = self.shaped(s, long);
+        crate::retouch::apply(&mut img, &s.retouch);
         crate::camera::colour(&mut img, s.camera, s.camera_strength);
         apply_film(&mut img, s)?;
         crate::adjust::apply_curve(&mut img, &s.adjust);

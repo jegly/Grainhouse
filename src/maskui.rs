@@ -641,6 +641,7 @@ pub fn connect(app: &Rc<App>) {
         m.edit.connect_active_notify(move |r| {
             let Some(a) = a.upgrade() else { return };
             if r.is_active() {
+                a.ui.rui.on.set_active(false);
                 a.set_zoom(1.0);
                 if a.ui.crop_button.is_active() {
                     a.ui.crop_button.set_active(false);
