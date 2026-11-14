@@ -90,28 +90,29 @@ Download the latest release from the [releases page](https://github.com/jegly/gr
 **Ubuntu and Debian (.deb):**
 
 ```
-sudo apt install ./grainhouse_1.0.2_amd64.deb
+sudo apt install ./grainhouse_1.1.0_amd64.deb
 ```
-
-<!-- release-checksums:start -->
-| File | SHA-256 |
-|---|---|
-| `grainhouse_1.0.2_amd64.deb` | *sha256:b131cdaab07fda8741d3f7423b78a61d958add8bf820b239774843ffa4027b2c* |
-
-Verify a download:
-
-```bash
-sha256sum grainhouse_1.0.2_amd64.deb
-```
-
-The [build attestation](https://github.com/jegly/Grainhouse/attestations) shows it was built by this repository's release workflow (with the GitHub CLI: `gh attestation verify grainhouse_1.0.2_amd64.deb --repo jegly/Grainhouse`).
-<!-- release-checksums:end -->
 
 **Snap:**
 
 ```
-sudo snap install --dangerous grainhouse_1.0.0_amd64.snap
+sudo snap install --dangerous grainhouse_1.1.0_amd64.snap
 ```
+
+To open photos from a USB drive or SD card with the snap, run `sudo snap connect grainhouse:removable-media`.
+
+<!-- release-checksums:start -->
+| File | SHA-256 |
+|---|---|
+| `grainhouse_1.1.0_amd64.deb` | *sha256:4faf3de07b70649d6dd9ffc63ad21f33d16d9f54e8f03da14be73bfb64d5a7ff* |
+| `grainhouse_1.1.0_amd64.snap` | *sha256:bdcb61cec55fb586ca2dcdee4b7e9d732c92db67c3157e9ae2eb41b237595c9b* |
+
+Verify a download:
+
+```bash
+sha256sum grainhouse_1.1.0_amd64.deb grainhouse_1.1.0_amd64.snap
+```
+<!-- release-checksums:end -->
 
 Then open Grainhouse from your app menu, or right-click a photo in Files and choose Open With Grainhouse.
 
