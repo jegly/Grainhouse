@@ -28,6 +28,14 @@ pub struct Adjust {
     pub mixer: [[f32; 3]; 8],
     /// shadows, midtones, highlights: hue (degrees) and amount (0..1)
     pub grade: [[f32; 2]; 3],
+    /// Point colour: a hue picked from the photo (degrees), how wide it reaches (0..1), and its hue shift,
+    /// saturation and luminance changes (-1..1)
+    pub point_hue: f32,
+    pub point_range: f32,
+    pub point_adj: [f32; 3],
+    /// Black and white conversion; bw_mix is how bright each mixer colour comes out, -1..1
+    pub bw: bool,
+    pub bw_mix: [f32; 8],
     /// brightness shift for shadows, midtones and highlights, -1..1
     pub grade_lum: [f32; 3],
     /// an overall tint: hue (degrees) and amount (0..1)
@@ -68,6 +76,11 @@ impl Default for Adjust {
             saturation: 0.0,
             mixer: [[0.0; 3]; 8],
             grade: [[0.0; 2]; 3],
+            point_hue: 0.0,
+            point_range: 0.5,
+            point_adj: [0.0; 3],
+            bw: false,
+            bw_mix: [0.0; 8],
             grade_lum: [0.0; 3],
             grade_global: [0.0; 2],
             balance: 0.0,
@@ -148,6 +161,8 @@ impl Adjust {
             && self.grade.iter().all(|g| g[1] == 0.0)
             && self.grade_lum.iter().all(|v| *v == 0.0)
             && self.grade_global[1] == 0.0
+            && self.point_adj.iter().all(|v| *v == 0.0)
+            && !self.bw
     }
 }
 
@@ -215,12 +230,34 @@ fn colour(a: &Adjust, c: [f32; 3]) -> [f32; 3] {
         }
         hue += dh * 30.0;
         chroma *= (1.0 + ds).max(0.0);
+        // point colour: one more band, centred on a hue picked from the photo
+        if a.point_adj.iter().any(|v| *v != 0.0) {
+            let width = 10.0 + 60.0 * a.point_range.clamp(0.0, 1.0);
+            let d = ((hue - a.point_hue + 540.0).rem_euclid(360.0) - 180.0).abs();
+            if d < width {
+                let wt = 0.5 * (1.0 + (std::f32::consts::PI * d / width).cos()) * (chroma / 0.04).min(1.0);
+                hue += a.point_adj[0] * 30.0 * wt;
+                chroma *= (1.0 + a.point_adj[1] * wt).max(0.0);
+                l += a.point_adj[2] * 0.2 * wt * (chroma / 0.12).min(1.0);
+            }
+        }
+        // black and white: each colour's brightness comes from the B&W mix, then the colour goes
+        if a.bw {
+            let mut db = 0.0;
+            for i in 0..8 {
+                db += w[i] * a.bw_mix[i];
+            }
+            l += db * 0.3 * (chroma / 0.08).min(1.0);
+        }
         // only coloured areas change brightness, so greys stay put
         l += dl * 0.2 * (chroma / 0.12).min(1.0);
         // vibrance: muted colours more, skin tones (orange hues) less
         let skin = 1.0 - 0.6 * (1.0 - ((hue.rem_euclid(360.0) - 55.0) / 30.0).abs().min(1.0));
         let v = if a.vibrance > 0.0 { a.vibrance * (1.0 - (chroma / 0.2).min(1.0)) * skin } else { a.vibrance };
         chroma *= (1.0 + v).max(0.0) * (1.0 + a.saturation).max(0.0);
+        if a.bw {
+            chroma = 0.0;
+        }
     }
     // colour grading: tint shadows, midtones and highlights, keeping brightness
     let t = (l - a.balance * 0.2).clamp(0.0, 1.0);
@@ -446,4 +483,10 @@ pub fn wheel_rgb(hue: f32, amount: f32) -> [f32; 3] {
         if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
     };
     [enc(c[0]), enc(c[1]), enc(c[2])]
+}
+
+/// The Oklab hue (degrees, 0..360) of an sRGB colour, for picking a colour from the photo.
+pub fn hue_of(c: [f32; 3]) -> f32 {
+    let [_, a, b] = oklab(c);
+    b.atan2(a).to_degrees().rem_euclid(360.0)
 }

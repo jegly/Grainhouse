@@ -63,6 +63,13 @@ struct Ui {
     mix_sat: Slider,
     mix_lum: Slider,
     grade_zone: adw::ComboRow,
+    point_swatch: gtk::DrawingArea,
+    point_range: Slider,
+    point_h: Slider,
+    point_s: Slider,
+    point_l: Slider,
+    bw_on: adw::SwitchRow,
+    bw_mix: Vec<Slider>,
     /// the colour wheels (shadows, midtones, highlights, global) and the brightness slider under each
     wheel_areas: Vec<gtk::DrawingArea>,
     wheel_lums: Vec<gtk::Scale>,
@@ -176,6 +183,11 @@ struct App {
     mixer: RefCell<[[f32; 3]; 8]>,
     grade: RefCell<[[f32; 2]; 3]>,
     grade_lum: RefCell<[f32; 3]>,
+    /// the hue picked for Point colour, and whether the next click on the photo picks one
+    point_hue: Cell<f32>,
+    picking: Cell<bool>,
+    /// a small copy of the photo on screen, for picking colours
+    sample: RefCell<Option<Image>>,
     grade_global: RefCell<[f32; 2]>,
     /// undo history and where we are in it
     history: RefCell<Vec<Settings>>,
@@ -319,6 +331,17 @@ impl App {
             saturation: pc(&u.saturation),
             mixer: *self.mixer.borrow(),
             grade: *self.grade.borrow(),
+            point_hue: self.point_hue.get(),
+            point_range: pc(&u.point_range),
+            point_adj: [pc(&u.point_h), pc(&u.point_s), pc(&u.point_l)],
+            bw: u.bw_on.is_active(),
+            bw_mix: {
+                let mut m = [0.0f32; 8];
+                for (i, sl) in u.bw_mix.iter().enumerate() {
+                    m[i] = pc(sl);
+                }
+                m
+            },
             grade_lum: *self.grade_lum.borrow(),
             grade_global: *self.grade_global.borrow(),
             balance: pc(&u.balance),
@@ -897,6 +920,16 @@ impl App {
         *self.mixer.borrow_mut() = a.mixer;
         *self.grade.borrow_mut() = a.grade;
         *self.grade_lum.borrow_mut() = a.grade_lum;
+        self.point_hue.set(a.point_hue);
+        pc(&u.point_range, a.point_range);
+        pc(&u.point_h, a.point_adj[0]);
+        pc(&u.point_s, a.point_adj[1]);
+        pc(&u.point_l, a.point_adj[2]);
+        u.point_swatch.queue_draw();
+        u.bw_on.set_active(a.bw);
+        for (i, sl) in u.bw_mix.iter().enumerate() {
+            pc(sl, a.bw_mix[i]);
+        }
         *self.grade_global.borrow_mut() = a.grade_global;
         pc(&u.balance, a.balance);
         pc(&u.clarity, a.clarity);
@@ -1184,6 +1217,10 @@ impl App {
         match result {
             Ok(img) => {
                 self.ui.picture.set_paintable(Some(&texture(&img)));
+                {
+                    let k = 480.0 / img.w.max(img.h) as f32;
+                    *self.sample.borrow_mut() = Some(if k < 1.0 { img.resized(((img.w as f32 * k) as usize).max(1), ((img.h as f32 * k) as usize).max(1)) } else { img.clone() });
+                }
                 self.apply_zoom();
                 *self.hist.borrow_mut() = Some(histogram(&img));
                 self.ui.histogram.queue_draw();
@@ -1446,6 +1483,36 @@ fn build(app: &adw::Application) {
     colour_group.add(&mixer_row);
     colour_group.add(&grade_row);
 
+    // point colour: pick a colour in the photo, then shift just that colour
+    let point_row = adw::ExpanderRow::builder().title("Point colour").subtitle("Pick a colour in the photo, then change just that colour").build();
+    let pick_row = adw::ActionRow::builder().title("Colour").subtitle("Press Pick, then click the photo").build();
+    let point_swatch = gtk::DrawingArea::builder().content_width(28).content_height(28).valign(gtk::Align::Center).build();
+    let pick_button = gtk::Button::builder().label("Pick").valign(gtk::Align::Center).build();
+    pick_row.add_suffix(&point_swatch);
+    pick_row.add_suffix(&pick_button);
+    let point_range = slider("Range", 0.0, 100.0, 1.0, 50.0, 0);
+    point_range.set_subtitle("How wide a band of similar colours");
+    let point_h = slider("Hue", -100.0, 100.0, 1.0, 0.0, 0);
+    let point_s = slider("Saturation", -100.0, 100.0, 1.0, 0.0, 0);
+    let point_l = slider("Luminance", -100.0, 100.0, 1.0, 0.0, 0);
+    point_row.add_row(&pick_row);
+    for r in [&point_range, &point_h, &point_s, &point_l] {
+        point_row.add_row(&r.row);
+    }
+    colour_group.add(&point_row);
+
+    // black and white: the sliders set how bright each colour comes out, like coloured filters
+    let bw_row = adw::ExpanderRow::builder().title("Black & white").subtitle("Turn the photo to black and white and mix how bright each colour is").build();
+    let bw_on = switch("Black & white", "Remove the colour");
+    bw_row.add_row(&bw_on);
+    let mut bw_mix: Vec<Slider> = Vec::new();
+    for name in adjust::MIXER_NAMES.iter() {
+        let sl = slider(name, -100.0, 100.0, 1.0, 0.0, 0);
+        bw_row.add_row(&sl.row);
+        bw_mix.push(sl);
+    }
+    colour_group.add(&bw_row);
+
     let detail_group = adw::PreferencesGroup::builder().title("Detail").build();
     let clarity = slider("Clarity", -100.0, 100.0, 1.0, 0.0, 0);
     clarity.set_subtitle("Midtone punch");
@@ -1684,6 +1751,13 @@ fn build(app: &adw::Application) {
             mix_sat,
             mix_lum,
             grade_zone,
+            point_swatch: point_swatch.clone(),
+            point_range,
+            point_h,
+            point_s,
+            point_l,
+            bw_on: bw_on.clone(),
+            bw_mix: bw_mix.clone(),
             wheel_areas: wheel_areas.clone(),
             wheel_lums: wheel_lums.clone(),
             grade_hue,
@@ -1784,6 +1858,9 @@ fn build(app: &adw::Application) {
         mixer: RefCell::new([[0.0; 3]; 8]),
         grade: RefCell::new([[0.0; 2]; 3]),
         grade_lum: RefCell::new([0.0; 3]),
+        point_hue: Cell::new(0.0),
+        picking: Cell::new(false),
+        sample: RefCell::new(None),
         grade_global: RefCell::new([0.0; 2]),
         history: RefCell::new(Vec::new()),
         history_pos: Cell::new(0),
@@ -1811,7 +1888,7 @@ fn build(app: &adw::Application) {
     }
     for row in [
         &u.exposure, &u.contrast, &u.tint, &u.shadows, &u.highlights, &u.whites, &u.blacks, &u.cam_strength, &u.strength, &u.amount, &u.diff_strength,
-        &u.diff_size, &u.bloom, &u.warmth, &u.hal_strength, &u.hal_size, &u.hal_threshold, &u.hal_warmth, &u.leak_strength, &u.leak_size, &u.leak_variant, &u.vibrance, &u.saturation, &u.balance, &u.clarity, &u.texture, &u.dehaze, &u.sharpen, &u.vignette,
+        &u.diff_size, &u.bloom, &u.warmth, &u.hal_strength, &u.hal_size, &u.hal_threshold, &u.point_range, &u.point_h, &u.point_s, &u.point_l, &u.hal_warmth, &u.leak_strength, &u.leak_size, &u.leak_variant, &u.vibrance, &u.saturation, &u.balance, &u.clarity, &u.texture, &u.dehaze, &u.sharpen, &u.vignette,
         &u.sharpen_radius, &u.masking, &u.noise, &u.colour_noise, &u.defringe, &u.vig_mid, &u.vig_feather, &u.local_size, &u.local_feather,
         &u.local_exposure, &u.local_contrast, &u.local_saturation, &u.local_warmth,
     ] {
@@ -1830,7 +1907,15 @@ fn build(app: &adw::Application) {
             }
         });
     }
-    for row in [&u.halation, &u.leak, &u.mono, &u.stamp] {
+    for row in u.bw_mix.iter() {
+        let a = Rc::downgrade(&app);
+        row.connect_value_notify(move |_| {
+            if let Some(a) = a.upgrade() {
+                a.request_render();
+            }
+        });
+    }
+    for row in [&u.halation, &u.leak, &u.mono, &u.stamp, &u.bw_on] {
         let a = Rc::downgrade(&app);
         row.connect_active_notify(move |_| {
             if let Some(a) = a.upgrade() {
@@ -1978,6 +2063,58 @@ fn build(app: &adw::Application) {
             a.mixer.borrow_mut()[c][i] = (r.value() / 100.0) as f32;
             a.request_render();
         });
+    }
+    {
+        let a = Rc::downgrade(&app);
+        u.point_swatch.set_draw_func(move |_, cr, w, h| {
+            let Some(a) = a.upgrade() else { return };
+            let c = adjust::wheel_rgb(a.point_hue.get(), 1.0);
+            cr.set_source_rgb(c[0] as f64, c[1] as f64, c[2] as f64);
+            cr.arc(w as f64 / 2.0, h as f64 / 2.0, (w.min(h) as f64) / 2.0 - 2.0, 0.0, std::f64::consts::TAU);
+            let _ = cr.fill();
+        });
+        let a = Rc::downgrade(&app);
+        pick_button.connect_clicked(move |b| {
+            if let Some(a) = a.upgrade() {
+                a.picking.set(true);
+                b.set_label("Click the photo");
+                a.toast("Click a colour in the photo");
+            }
+        });
+        let click = gtk::GestureClick::new();
+        let (a, pb) = (Rc::downgrade(&app), pick_button.clone());
+        click.connect_pressed(move |_, _, x, y| {
+            let Some(a) = a.upgrade() else { return };
+            if !a.picking.get() {
+                return;
+            }
+            let picture = a.ui.picture.clone();
+            let Some((px, py)) = a.ui.zoom_scroll.translate_coordinates(&picture, x, y) else { return };
+            let Some(p) = picture.paintable() else { return };
+            let (iw, ih) = (p.intrinsic_width() as f64, p.intrinsic_height() as f64);
+            let (pw, ph) = (picture.width() as f64, picture.height() as f64);
+            if iw <= 0.0 || ih <= 0.0 || pw <= 0.0 || ph <= 0.0 {
+                return;
+            }
+            let k = (pw / iw).min(ph / ih);
+            let (fx, fy) = ((px - (pw - iw * k) / 2.0) / (iw * k), (py - (ph - ih * k) / 2.0) / (ih * k));
+            if !(0.0..1.0).contains(&fx) || !(0.0..1.0).contains(&fy) {
+                return;
+            }
+            let rgb = a.sample.borrow().as_ref().map(|s| {
+                let (sx, sy) = (((fx * s.w as f64) as usize).min(s.w - 1), ((fy * s.h as f64) as usize).min(s.h - 1));
+                let px = s.px[sy * s.w + sx];
+                [((px >> 16) & 255) as f32 / 255.0, ((px >> 8) & 255) as f32 / 255.0, (px & 255) as f32 / 255.0]
+            });
+            if let Some(c) = rgb {
+                a.point_hue.set(adjust::hue_of(c));
+                a.picking.set(false);
+                pb.set_label("Pick");
+                a.ui.point_swatch.queue_draw();
+                a.request_render();
+            }
+        });
+        u.zoom_scroll.add_controller(click);
     }
     for (i, area) in wheel_areas.iter().enumerate() {
         {

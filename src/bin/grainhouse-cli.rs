@@ -84,6 +84,19 @@ pub fn run(args: Vec<String>) {
                     s.adjust.grade_lum[k] = v.get(k).copied().unwrap_or(0.0);
                 }
             }
+            "--bw" => s.adjust.bw = true,
+            "--bw-mix" => {
+                let v: Vec<f32> = val().split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                for k in 0..8 {
+                    s.adjust.bw_mix[k] = v.get(k).copied().unwrap_or(0.0);
+                }
+            }
+            "--point" => {
+                let v: Vec<f32> = val().split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                s.adjust.point_hue = v.first().copied().unwrap_or(0.0);
+                s.adjust.point_range = v.get(1).copied().unwrap_or(0.5);
+                s.adjust.point_adj = [v.get(2).copied().unwrap_or(0.0), v.get(3).copied().unwrap_or(0.0), v.get(4).copied().unwrap_or(0.0)];
+            }
             "--halation" => s.develop.halation = true,
             "--halation-strength" => s.develop.halation_strength = val().parse().unwrap_or(1.0),
             "--halation-size" => s.develop.halation_size = val().parse().unwrap_or(1.0),
