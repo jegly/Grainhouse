@@ -1,12 +1,11 @@
 name: grainhouse
 base: core26
-version: '1.0.0'
+version: '1.1.0'
 title: Grainhouse
 summary: Photo editor with film looks, AI effects and upscaling
 description: |
   Grainhouse edits RAW files and JPEGs: white balance, tone curve, colour mixer
-  and grading, crop, lens corrections, noise reduction and local adjustments with
-  AI masks. It adds 153 film stocks, creative looks, your own .cube LUTs, camera
+  and wheels, crop, lens corrections, noise reduction, masks and spot healing. It adds 238 film stocks, creative looks, your own .cube LUTs, camera
   looks, 30 effects (many using AI to find the people in your photo), diffusion
   filters, film frames, and Real-ESRGAN upscaling on export.
 
