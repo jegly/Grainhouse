@@ -16,6 +16,7 @@ pub mod geometry;
 pub mod img;
 pub mod io;
 pub mod local;
+pub mod masks;
 pub mod localtone;
 pub mod lut;
 pub mod pipeline;

@@ -92,6 +92,8 @@ pub struct Settings {
     pub frame: usize,
     /// a local adjustment through a mask
     pub local: crate::local::Local,
+    /// mask layers (brush, gradients, ranges, AI) with their own adjustments
+    pub masks: Vec<crate::masks::MaskLayer>,
 }
 
 impl Default for Settings {
@@ -118,6 +120,7 @@ impl Default for Settings {
             adjust: crate::adjust::Adjust::default(),
             frame: 0,
             local: crate::local::Local::default(),
+            masks: Vec::new(),
         }
     }
 }
@@ -295,7 +298,7 @@ impl Session {
 
     /// True when rendering with these settings will run the AI models first (the slow part).
     pub fn needs_ai(&self, s: &Settings) -> bool {
-        let local = crate::local::uses_subject(s.local.kind) && {
+        let local = (crate::local::uses_subject(s.local.kind) || crate::masks::any_subject(&s.masks)) && {
             let mut q = s.clone();
             q.effect = GHOSTS;
             q.target = 0;
@@ -383,6 +386,10 @@ impl Session {
         if s.local.kind != 0 {
             let mask = if crate::local::uses_subject(s.local.kind) { self.subject_mask(s)? } else { None };
             crate::local::apply(&mut img, &s.local, mask.as_ref());
+        }
+        if !s.masks.is_empty() {
+            let ai = if crate::masks::any_subject(&s.masks) { self.subject_mask(s)? } else { None };
+            crate::masks::apply_all(&mut img, &s.masks, ai.as_ref());
         }
         if s.effect != NONE && !is_multi(s.effect) {
             let found = self.found(s)?;
@@ -531,6 +538,10 @@ pub fn render_multi(sessions: &[&Session], s: &Settings, long: usize) -> Result<
     if s.local.kind != 0 {
         let mask = if crate::local::uses_subject(s.local.kind) { sessions[0].subject_mask(s)? } else { None };
         crate::local::apply(&mut img, &s.local, mask.as_ref());
+    }
+    if !s.masks.is_empty() {
+        let ai = if crate::masks::any_subject(&s.masks) { sessions[0].subject_mask(s)? } else { None };
+        crate::masks::apply_all(&mut img, &s.masks, ai.as_ref());
     }
     finish(&mut img, s, sessions.first().map(|x| seed_of(&x.path)).unwrap_or(1), sessions.first().and_then(|x| x.date));
     Ok(img)
