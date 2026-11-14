@@ -2451,6 +2451,10 @@ fn export_dialog(app: &Rc<App>) {
     let page = adw::PreferencesPage::new();
 
     let out_group = adw::PreferencesGroup::builder().title("File").build();
+    let preset_names: Vec<&str> = export::PRESETS.iter().map(|p| p.0).collect();
+    let preset = combo("Preset", &preset_names, 0);
+    preset.set_subtitle("One click for Instagram, web or print");
+    out_group.add(&preset);
     let which = combo("Photos", &["This photo", &format!("All {} photos (same settings)", sessions.len())], 0);
     which.set_visible(sessions.len() > 1 && !multi);
     let format = combo("Format", &export::FORMATS, opts.format);
@@ -2475,6 +2479,12 @@ fn export_dialog(app: &Rc<App>) {
     size_group.add(&size);
     size_group.add(&long_edge);
     size_group.add(&percent);
+    let canvas_names: Vec<&str> = export::CANVASES.iter().map(|c| c.0).collect();
+    let canvas = combo("Canvas", &canvas_names, opts.canvas);
+    canvas.set_subtitle("Fit the photo into a social media frame");
+    let fill = combo("Canvas fill", &export::FILLS, opts.fill);
+    size_group.add(&canvas);
+    size_group.add(&fill);
 
     let ai_group = adw::PreferencesGroup::builder().title("AI").description("Real-ESRGAN runs on the CPU: the estimate is shown below").build();
     let up = combo("Upscale", &export::UPSCALES, opts.upscale);
@@ -2506,9 +2516,9 @@ fn export_dialog(app: &Rc<App>) {
 
     let folder: Rc<RefCell<Option<PathBuf>>> = Rc::new(RefCell::new(opts.folder.clone()));
     let read = {
-        let (format, quality, exif, suffix, size, long_edge, percent, up, up_model, sharpen, sharpen_amount, folder) = (
+        let (format, quality, exif, suffix, size, long_edge, percent, up, up_model, sharpen, sharpen_amount, folder, canvas, fill) = (
             format.clone(), quality.clone(), exif.clone(), suffix.clone(), size.clone(), long_edge.clone(), percent.clone(), up.clone(), up_model.clone(),
-            sharpen.clone(), sharpen_amount.clone(), folder.clone(),
+            sharpen.clone(), sharpen_amount.clone(), folder.clone(), canvas.clone(), fill.clone(),
         );
         move || ExportOptions {
             format: format.selected() as usize,
@@ -2521,6 +2531,8 @@ fn export_dialog(app: &Rc<App>) {
             sharpen: sharpen.selected() as usize,
             sharpen_amount: (sharpen_amount.value() / 100.0) as f32,
             keep_exif: exif.is_active(),
+            canvas: canvas.selected() as usize,
+            fill: fill.selected() as usize,
             suffix: suffix.text().to_string(),
             folder: folder.borrow().clone(),
         }
@@ -2528,14 +2540,15 @@ fn export_dialog(app: &Rc<App>) {
     let read = Rc::new(read);
     let (w, h) = sessions.get(current).map(|s| s.output_size(&settings)).unwrap_or((0, 0));
     let refresh = {
-        let (read, quality, long_edge, percent, up_model, sharpen, sharpen_amount, estimate, which) =
-            (read.clone(), quality.clone(), long_edge.clone(), percent.clone(), up_model.clone(), sharpen.clone(), sharpen_amount.clone(), estimate.clone(), which.clone());
+        let (read, quality, long_edge, percent, up_model, sharpen, sharpen_amount, estimate, which, fill) =
+            (read.clone(), quality.clone(), long_edge.clone(), percent.clone(), up_model.clone(), sharpen.clone(), sharpen_amount.clone(), estimate.clone(), which.clone(), fill.clone());
         let count = sessions.len();
         move || {
             let o = read();
             quality.set_visible(o.format == 0);
             long_edge.set_visible(o.size == 1);
             percent.set_visible(o.size == 2);
+            fill.set_visible(o.canvas > 0);
             up_model.set_visible(o.upscale > 0);
             sharpen.set_sensitive(o.upscale == 0);
             sharpen_amount.set_visible(o.sharpen == 1 && o.upscale == 0);
@@ -2552,9 +2565,27 @@ fn export_dialog(app: &Rc<App>) {
     };
     let refresh = Rc::new(refresh);
     refresh();
-    for r in [&format, &size, &up, &up_model, &sharpen, &which] {
+    for r in [&format, &size, &up, &up_model, &sharpen, &which, &canvas, &fill] {
         let f = refresh.clone();
         r.connect_selected_notify(move |_| f());
+    }
+    {
+        // a preset sets the other rows in one go
+        let (format, quality, exif, size, long_edge, canvas, fill) = (format.clone(), quality.clone(), exif.clone(), size.clone(), long_edge.clone(), canvas.clone(), fill.clone());
+        preset.connect_selected_notify(move |p| {
+            let i = p.selected() as usize;
+            if i == 0 {
+                return;
+            }
+            let (_, f, q, keep, cv, fl, sz, le) = export::PRESETS[i];
+            format.set_selected(f as u32);
+            quality.set_value(q as f64);
+            exif.set_active(keep);
+            size.set_selected(sz as u32);
+            long_edge.set_value(le as f64);
+            canvas.set_selected(cv as u32);
+            fill.set_selected(fl as u32);
+        });
     }
     for r in [&long_edge, &percent, &sharpen_amount] {
         let f = refresh.clone();

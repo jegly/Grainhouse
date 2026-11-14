@@ -122,6 +122,11 @@ pub fn run(args: Vec<String>) {
             "--sharpen" => ex.sharpen = match val().as_str() { "smart" => 1, "ai" => 2, _ => 0 },
             "--sharpen-amount" => ex.sharpen_amount = val().parse().unwrap_or(0.8),
             "--quality" => ex.quality = val().parse().unwrap_or(92),
+            "--canvas" => {
+                let names: Vec<&str> = export::CANVASES.iter().map(|c| c.0).collect();
+                ex.canvas = pick(&names, &val(), "canvas");
+            }
+            "--canvas-fill" => ex.fill = pick(&export::FILLS, &val(), "canvas fill"),
             "--long-edge" => {
                 ex.size = 1;
                 ex.long_edge = val().parse().unwrap_or(3000);

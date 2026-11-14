@@ -12,6 +12,29 @@ use std::path::{Path, PathBuf};
 pub const FORMATS: [&str; 3] = ["JPEG", "PNG", "TIFF"];
 pub const SIZES: [&str; 3] = ["Original size", "Long edge", "Percent"];
 pub const UPSCALES: [&str; 3] = ["No upscaling", "2x (Real-ESRGAN)", "4x (Real-ESRGAN)"];
+/// Canvas sizes for social media: name, width, height (0 = none).
+pub const CANVASES: [(&str, usize, usize); 6] = [
+    ("None", 0, 0),
+    ("Instagram post 4:5 (1080 x 1350)", 1080, 1350),
+    ("Instagram square (1080 x 1080)", 1080, 1080),
+    ("Instagram story / reel 9:16 (1080 x 1920)", 1080, 1920),
+    ("Landscape 16:9 (1920 x 1080)", 1920, 1080),
+    ("Facebook / X wide 1.91:1 (1200 x 628)", 1200, 628),
+];
+pub const FILLS: [&str; 4] = ["Pad white", "Pad black", "Pad grey", "Crop to fill"];
+
+/// One-click setups: name, format, quality, keep EXIF, canvas, fill, size mode (0 original, 1 long edge), long edge.
+pub const PRESETS: [(&str, usize, u8, bool, usize, usize, usize, usize); 8] = [
+    ("Custom", 0, 92, true, 0, 0, 0, 3000),
+    ("Instagram post 4:5", 0, 92, false, 1, 0, 0, 3000),
+    ("Instagram square", 0, 92, false, 2, 0, 0, 3000),
+    ("Instagram story / reel", 0, 92, false, 3, 1, 0, 3000),
+    ("Facebook / X", 0, 88, false, 0, 0, 1, 2048),
+    ("Web (2048 px)", 0, 85, false, 0, 0, 1, 2048),
+    ("Full quality JPEG", 0, 100, true, 0, 0, 0, 3000),
+    ("Print (TIFF, full size)", 2, 100, true, 0, 0, 0, 3000),
+];
+
 pub const SHARPEN: [&str; 3] = ["No sharpening", "Smart sharpen", "AI detail (Real-ESRGAN)"];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -27,6 +50,9 @@ pub struct ExportOptions {
     /// Smart sharpen strength, 0..2
     pub sharpen_amount: f32,
     pub keep_exif: bool,
+    /// Index into CANVASES (0 = none) and how to fill it, FILLS.
+    pub canvas: usize,
+    pub fill: usize,
     pub suffix: String,
     /// Folder to save into; None = next to the original.
     pub folder: Option<PathBuf>,
@@ -45,6 +71,8 @@ impl Default for ExportOptions {
             sharpen: 0,
             sharpen_amount: 0.8,
             keep_exif: true,
+            canvas: 0,
+            fill: 0,
             suffix: "_grainhouse".into(),
             folder: None,
         }
@@ -101,10 +129,40 @@ pub fn process(img: Image, opt: &ExportOptions, progress: &dyn Fn(f32) -> bool) 
             img = resize(&img, tw, th);
         }
     }
+    if opt.canvas > 0 && opt.canvas < CANVASES.len() {
+        let (_, cw, ch) = CANVASES[opt.canvas];
+        img = apply_canvas(&img, cw, ch, opt.fill);
+    }
     if opt.sharpen == 1 {
         smart_sharpen(&mut img, opt.sharpen_amount);
     }
     Ok(img)
+}
+
+/// Puts the picture on a cw x ch canvas: padded with a colour, or enlarged and cropped to fill it.
+fn apply_canvas(img: &Image, cw: usize, ch: usize, fill: usize) -> Image {
+    let (w, h) = (img.w.max(1) as f32, img.h.max(1) as f32);
+    if fill >= 3 {
+        let k = (cw as f32 / w).max(ch as f32 / h);
+        let (rw, rh) = (((w * k).round() as usize).max(cw), ((h * k).round() as usize).max(ch));
+        let big = img.to_rgb();
+        let big = image::imageops::resize(&big, rw as u32, rh as u32, FilterType::Lanczos3);
+        let x = ((rw - cw) / 2) as u32;
+        let y = ((rh - ch) / 2) as u32;
+        let out = image::imageops::crop_imm(&big, x, y, cw as u32, ch as u32).to_image();
+        return Image::from_rgb(&out);
+    }
+    let k = (cw as f32 / w).min(ch as f32 / h);
+    let (rw, rh) = (((w * k).round() as usize).clamp(1, cw), ((h * k).round() as usize).clamp(1, ch));
+    let small = image::imageops::resize(&img.to_rgb(), rw as u32, rh as u32, FilterType::Lanczos3);
+    let bg = match fill {
+        1 => 0u8,
+        2 => 128u8,
+        _ => 255u8,
+    };
+    let mut out = image::RgbImage::from_pixel(cw as u32, ch as u32, image::Rgb([bg, bg, bg]));
+    image::imageops::overlay(&mut out, &small, ((cw - rw) / 2) as i64, ((ch - rh) / 2) as i64);
+    Image::from_rgb(&out)
 }
 
 fn resize(img: &Image, w: usize, h: usize) -> Image {
