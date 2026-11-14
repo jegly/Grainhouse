@@ -125,6 +125,14 @@ struct Ui {
     /// draws the crop frame over the photo and takes the drags
     crop_area: gtk::DrawingArea,
     halation: adw::SwitchRow,
+    hal_strength: Slider,
+    hal_size: Slider,
+    hal_threshold: Slider,
+    hal_warmth: Slider,
+    /// eye buttons: hide an effect without losing its settings
+    eye_diffusion: gtk::ToggleButton,
+    eye_halation: gtk::ToggleButton,
+    eye_develop: gtk::ToggleButton,
     grain: adw::ComboRow,
     leak: adw::SwitchRow,
     mono: adw::SwitchRow,
@@ -256,6 +264,14 @@ fn slider(title: &str, min: f64, max: f64, step: f64, value: f64, digits: u32) -
     Slider { row, scale }
 }
 
+/// An eye button for a group's header: down shows the effect, up hides it while keeping its settings.
+fn eye_button(tip: &str) -> gtk::ToggleButton {
+    let b = gtk::ToggleButton::builder().icon_name("view-reveal-symbolic").active(true).tooltip_text(tip).valign(gtk::Align::Center).build();
+    b.add_css_class("flat");
+    b.connect_toggled(|b| b.set_icon_name(if b.is_active() { "view-reveal-symbolic" } else { "view-conceal-symbolic" }));
+    b
+}
+
 fn switch(title: &str, subtitle: &str) -> adw::SwitchRow {
     adw::SwitchRow::builder().title(title).subtitle(subtitle).use_markup(false).build()
 }
@@ -329,15 +345,20 @@ impl App {
         s.amount = (u.amount.value() / 100.0) as f32;
         s.colour = u.colour.selected() as usize;
         s.glow = u.glow.selected() as usize;
-        s.diffusion = u.diffusion.selected() as usize;
+        s.diffusion = if u.eye_diffusion.is_active() { u.diffusion.selected() as usize } else { 0 };
         s.diffusion_opt.strength = (u.diff_strength.value() / 100.0) as f32;
         s.diffusion_opt.size = (u.diff_size.value() / 100.0) as f32;
         s.diffusion_opt.bloom = (u.bloom.value() / 100.0) as f32;
         s.diffusion_opt.warmth = (u.warmth.value() / 100.0) as f32;
         s.geometry = *self.geometry.borrow();
-        s.develop.halation = u.halation.is_active();
-        s.develop.grain = u.grain.selected() as usize;
-        s.develop.light_leak = u.leak.is_active();
+        s.develop.halation = u.halation.is_active() && u.eye_halation.is_active();
+        s.develop.halation_strength = (u.hal_strength.value() / 100.0) as f32;
+        s.develop.halation_size = (u.hal_size.value() / 100.0) as f32;
+        s.develop.halation_threshold = u.hal_threshold.value() as f32;
+        s.develop.halation_warmth = (u.hal_warmth.value() / 100.0) as f32;
+        let dev_shown = u.eye_develop.is_active();
+        s.develop.grain = if dev_shown { u.grain.selected() as usize } else { 0 };
+        s.develop.light_leak = u.leak.is_active() && dev_shown;
         s.develop.monochrome = u.mono.is_active();
         s
     }
@@ -380,6 +401,9 @@ impl App {
         let diffusing = u.diffusion.selected() != 0;
         for r in [&u.diff_strength, &u.diff_size, &u.bloom, &u.warmth] {
             r.set_visible(diffusing);
+        }
+        for r in [&u.hal_strength, &u.hal_size, &u.hal_threshold, &u.hal_warmth] {
+            r.set_visible(u.halation.is_active());
         }
         u.cam_strength.set_sensitive(u.camera.selected() != 0);
         u.film.set_sensitive(u.brand.selected() != 0);
@@ -815,6 +839,13 @@ impl App {
         pc(&u.bloom, s.diffusion_opt.bloom);
         pc(&u.warmth, s.diffusion_opt.warmth);
         u.halation.set_active(s.develop.halation);
+        pc(&u.hal_strength, s.develop.halation_strength);
+        pc(&u.hal_size, s.develop.halation_size);
+        u.hal_threshold.set_value(s.develop.halation_threshold as f64);
+        pc(&u.hal_warmth, s.develop.halation_warmth);
+        u.eye_diffusion.set_active(true);
+        u.eye_halation.set_active(true);
+        u.eye_develop.set_active(true);
         u.grain.set_selected(s.develop.grain as u32);
         u.leak.set_active(s.develop.light_leak);
         u.mono.set_active(s.develop.monochrome);
@@ -1371,6 +1402,8 @@ fn build(app: &adw::Application) {
     diff_size.set_subtitle("How far the glow reaches");
     bloom.set_subtitle("Extra glow round lamps and bright spots");
     warmth.set_subtitle("Cool blue to warm orange glow");
+    let eye_diffusion = eye_button("Show or hide the diffusion filter");
+    lens_group.set_header_suffix(Some(&eye_diffusion));
     lens_group.add(&diffusion);
     for r in [&diff_strength, &diff_size, &bloom, &warmth] {
         lens_group.add(&r.row);
@@ -1397,12 +1430,29 @@ fn build(app: &adw::Application) {
     crop_group.add(&straighten.row);
     crop_group.add(&rotate_row);
 
-    let dev_group = adw::PreferencesGroup::builder().title("Develop").description("Halation, grain and light leaks").build();
-    let halation = switch("Halation", "CineStill-style red glow round bright lights");
+    let hal_group = adw::PreferencesGroup::builder().title("Halation").description("Red glow round bright lights, like CineStill").build();
+    let halation = switch("Halation", "On or off");
+    let hal_strength = slider("Strength", 0.0, 300.0, 1.0, 100.0, 0);
+    let hal_size = slider("Glow size", 10.0, 400.0, 1.0, 100.0, 0);
+    let hal_threshold = slider("Threshold", 120.0, 250.0, 1.0, 215.0, 0);
+    let hal_warmth = slider("Colour", -100.0, 100.0, 1.0, 0.0, 0);
+    hal_strength.set_subtitle("How strong the glow is");
+    hal_size.set_subtitle("How far it spreads from bright lights");
+    hal_threshold.set_subtitle("Lower = more of the picture glows");
+    hal_warmth.set_subtitle("Deep red to orange-yellow");
+    let eye_halation = eye_button("Show or hide halation");
+    hal_group.set_header_suffix(Some(&eye_halation));
+    hal_group.add(&halation);
+    for r in [&hal_strength, &hal_size, &hal_threshold, &hal_warmth] {
+        hal_group.add(&r.row);
+    }
+
+    let dev_group = adw::PreferencesGroup::builder().title("Grain and light leaks").build();
     let grain = combo("Grain", &develop::GRAIN_NAMES, 0);
     let leak = switch("Light leak", "Random each photo");
     let mono = switch("Black & white grain", "No colour in the grain");
-    dev_group.add(&halation);
+    let eye_develop = eye_button("Show or hide grain and light leaks");
+    dev_group.set_header_suffix(Some(&eye_develop));
     dev_group.add(&grain);
     dev_group.add(&leak);
     dev_group.add(&mono);
@@ -1410,7 +1460,7 @@ fn build(app: &adw::Application) {
     let page = adw::PreferencesPage::new();
     for g in [
         &raw_group, &curve_group, &crop_group, &lens_fix_group, &camera_group, &film_group, &colour_group, &detail_group, &local_group, &fx_group, &lens_group,
-        &dev_group, &frame_group,
+        &hal_group, &dev_group, &frame_group,
     ] {
         page.add(g);
     }
@@ -1546,6 +1596,13 @@ fn build(app: &adw::Application) {
             straighten,
             crop_area: crop_area.clone(),
             halation,
+            hal_strength,
+            hal_size,
+            hal_threshold,
+            hal_warmth,
+            eye_diffusion,
+            eye_halation,
+            eye_develop,
             grain,
             leak,
             mono,
@@ -1591,12 +1648,20 @@ fn build(app: &adw::Application) {
     }
     for row in [
         &u.exposure, &u.contrast, &u.tint, &u.shadows, &u.highlights, &u.whites, &u.blacks, &u.cam_strength, &u.strength, &u.amount, &u.diff_strength,
-        &u.diff_size, &u.bloom, &u.warmth, &u.vibrance, &u.saturation, &u.balance, &u.clarity, &u.texture, &u.dehaze, &u.sharpen, &u.vignette,
+        &u.diff_size, &u.bloom, &u.warmth, &u.hal_strength, &u.hal_size, &u.hal_threshold, &u.hal_warmth, &u.vibrance, &u.saturation, &u.balance, &u.clarity, &u.texture, &u.dehaze, &u.sharpen, &u.vignette,
         &u.sharpen_radius, &u.masking, &u.noise, &u.colour_noise, &u.defringe, &u.vig_mid, &u.vig_feather, &u.local_size, &u.local_feather,
         &u.local_exposure, &u.local_contrast, &u.local_saturation, &u.local_warmth,
     ] {
         let a = Rc::downgrade(&app);
         row.connect_value_notify(move |_| {
+            if let Some(a) = a.upgrade() {
+                a.request_render();
+            }
+        });
+    }
+    for row in [&u.eye_diffusion, &u.eye_halation, &u.eye_develop] {
+        let a = Rc::downgrade(&app);
+        row.connect_toggled(move |_| {
             if let Some(a) = a.upgrade() {
                 a.request_render();
             }

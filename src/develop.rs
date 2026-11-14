@@ -7,16 +7,40 @@ use rayon::prelude::*;
 
 pub const GRAIN_NAMES: [&str; 5] = ["Off", "Fine", "Medium", "Heavy", "Coarse"];
 
-#[derive(Clone, Copy, PartialEq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct DevelopOptions {
     pub halation: bool,
+    /// Halation strength, 1 = the original look.
+    pub halation_strength: f32,
+    /// How far the glow reaches, 1 = the original look.
+    pub halation_size: f32,
+    /// Brightness (0..255) a highlight must pass before it glows.
+    pub halation_threshold: f32,
+    /// -1 deep red, 0 the original red-orange, 1 orange-yellow.
+    pub halation_warmth: f32,
     /// 0 off, 1 fine, 2 medium, 3 heavy, 4 coarse
     pub grain: usize,
     pub light_leak: bool,
     /// Black and white film: grain without colour.
     pub monochrome: bool,
     pub seed: u64,
+}
+
+impl Default for DevelopOptions {
+    fn default() -> Self {
+        DevelopOptions {
+            halation: false,
+            halation_strength: 1.0,
+            halation_size: 1.0,
+            halation_threshold: THRESHOLD as f32,
+            halation_warmth: 0.0,
+            grain: 0,
+            light_leak: false,
+            monochrome: false,
+            seed: 0,
+        }
+    }
 }
 
 impl DevelopOptions {
@@ -59,15 +83,17 @@ pub fn develop(img: &mut Image, opt: &DevelopOptions) {
     if opt.halation {
         let small = img.resized((w / 4).max(2), (h / 4).max(2));
         let tiny = small.resized((small.w / 4).max(2), (small.h / 4).max(2));
-        let mut c = highlights(&small);
+        let thr = opt.halation_threshold.clamp(100.0, 250.0) as i32;
+        let size = opt.halation_size.clamp(0.1, 4.0);
+        let mut c = highlights(&small, thr);
         let c0 = c.clone();
         for _ in 0..3 {
-            box_blur(&mut c, small.w, small.h, ((small.w as f32 * 0.004).round() as usize).max(1));
+            box_blur(&mut c, small.w, small.h, ((small.w as f32 * 0.004 * size).round() as usize).max(1));
         }
-        let mut g = highlights(&tiny);
+        let mut g = highlights(&tiny, thr);
         let g0 = g.clone();
         for _ in 0..3 {
-            box_blur(&mut g, tiny.w, tiny.h, ((tiny.w as f32 * 0.025).round() as usize).max(1));
+            box_blur(&mut g, tiny.w, tiny.h, ((tiny.w as f32 * 0.025 * size).round() as usize).max(1));
         }
         // the glow only spills outward: a big bright window gets a red edge, not a wash over everything
         for i in 0..c.len() {
@@ -84,6 +110,10 @@ pub fn develop(img: &mut Image, opt: &DevelopOptions) {
     let noise_seed = (opt.seed ^ (opt.seed >> 32)) as i32;
     let cell = GRAIN_CLUMP[opt.grain] * w as f32 / 3000.0;
     let strength = GRAIN_STRENGTH[opt.grain];
+    let hs = opt.halation_strength.clamp(0.0, 3.0);
+    let wm = opt.halation_warmth.clamp(-1.0, 1.0);
+    let core_tint = [CORE_TINT[0], (CORE_TINT[1] + 0.3 * wm).clamp(0.05, 1.0), (CORE_TINT[2] + 0.2 * wm).clamp(0.0, 1.0)];
+    let halo_tint = [HALO_TINT[0], (HALO_TINT[1] + 0.2 * wm).clamp(0.0, 1.0), (HALO_TINT[2] + 0.1 * wm).clamp(0.0, 1.0)];
 
     // light leak: 1-3 soft blobs just outside one edge, stretched along it, worked out on a coarse grid
     let leak = if opt.light_leak { Some(leak_map(w, h, &mut rnd, noise_seed)) } else { None };
@@ -119,13 +149,13 @@ pub fn develop(img: &mut Image, opt: &DevelopOptions) {
             let (mut r, mut g, mut b) = unpack(row[x]);
             if let (Some(core), Some(halo)) = (&core, &halo) {
                 let c = core.at((x as f32 + 0.5) * core.w as f32 / w as f32 - 0.5, (y as f32 + 0.5) * core.h as f32 / h as f32 - 0.5)
-                    * CORE_STRENGTH;
+                    * CORE_STRENGTH * hs;
                 let gl = halo.at((x as f32 + 0.5) * halo.w as f32 / w as f32 - 0.5, (y as f32 + 0.5) * halo.h as f32 / h as f32 - 0.5)
-                    * HALO_STRENGTH;
+                    * HALO_STRENGTH * hs;
                 if c > 0.002 || gl > 0.002 {
-                    r = screen(r, c * CORE_TINT[0] + gl * HALO_TINT[0]);
-                    g = screen(g, c * CORE_TINT[1] + gl * HALO_TINT[1]);
-                    b = screen(b, c * CORE_TINT[2] + gl * HALO_TINT[2]);
+                    r = screen(r, c * core_tint[0] + gl * halo_tint[0]);
+                    g = screen(g, c * core_tint[1] + gl * halo_tint[1]);
+                    b = screen(b, c * core_tint[2] + gl * halo_tint[2]);
                 }
             }
             if let Some(lk) = &leak {
@@ -218,14 +248,14 @@ fn leak_map(w: usize, h: usize, rnd: &mut Rng, noise_seed: i32) -> (Vec<f32>, Ve
     (lr, lg, lb, lw, lh)
 }
 
-fn highlights(img: &Image) -> Vec<f32> {
+fn highlights(img: &Image, threshold: i32) -> Vec<f32> {
     img.px
         .iter()
         .map(|&p| {
             let (r, g, b) = (((p >> 16) & 255) as i32, ((p >> 8) & 255) as i32, (p & 255) as i32);
             let lum = (r * 77 + g * 150 + b * 29) >> 8;
             let v = lum.max(r.max(g).max(b) - 20);
-            let t = if v <= THRESHOLD { 0.0 } else { (v - THRESHOLD) as f32 / (255 - THRESHOLD) as f32 };
+            let t = if v <= threshold { 0.0 } else { (v - threshold) as f32 / (255 - threshold).max(1) as f32 };
             t * t
         })
         .collect()
