@@ -28,6 +28,10 @@ pub struct Adjust {
     pub mixer: [[f32; 3]; 8],
     /// shadows, midtones, highlights: hue (degrees) and amount (0..1)
     pub grade: [[f32; 2]; 3],
+    /// brightness shift for shadows, midtones and highlights, -1..1
+    pub grade_lum: [f32; 3],
+    /// an overall tint: hue (degrees) and amount (0..1)
+    pub grade_global: [f32; 2],
     /// -1 favours shadows .. 1 favours highlights
     pub balance: f32,
     /// -1..1 midtone local contrast
@@ -64,6 +68,8 @@ impl Default for Adjust {
             saturation: 0.0,
             mixer: [[0.0; 3]; 8],
             grade: [[0.0; 2]; 3],
+            grade_lum: [0.0; 3],
+            grade_global: [0.0; 2],
             balance: 0.0,
             clarity: 0.0,
             texture: 0.0,
@@ -140,6 +146,8 @@ impl Adjust {
             && self.saturation == 0.0
             && self.mixer.iter().all(|m| m.iter().all(|v| *v == 0.0))
             && self.grade.iter().all(|g| g[1] == 0.0)
+            && self.grade_lum.iter().all(|v| *v == 0.0)
+            && self.grade_global[1] == 0.0
     }
 }
 
@@ -227,6 +235,12 @@ fn colour(a: &Adjust, c: [f32; 3]) -> [f32; 3] {
             nb += g[1] * 0.06 * w * r.sin();
         }
     }
+    if a.grade_global[1] > 0.0 {
+        let r = a.grade_global[0].to_radians();
+        na += a.grade_global[1] * 0.04 * r.cos();
+        nb += a.grade_global[1] * 0.04 * r.sin();
+    }
+    let l = l + 0.15 * (a.grade_lum[0] * ws + a.grade_lum[1] * wm + a.grade_lum[2] * wh);
     from_oklab([l, na, nb])
 }
 
@@ -421,4 +435,15 @@ mod tests {
         let grey = colour(&Adjust { saturation: 1.0, ..a }, [0.5, 0.5, 0.5]);
         assert!((grey[0] - grey[2]).abs() < 1e-3);
     }
+}
+
+/// The colour of a spot on a colour wheel: hue in degrees, distance from the centre 0..1, as sRGB 0..1.
+pub fn wheel_rgb(hue: f32, amount: f32) -> [f32; 3] {
+    let r = hue.to_radians();
+    let c = from_oklab([0.74, 0.13 * amount * r.cos(), 0.13 * amount * r.sin()]);
+    let enc = |v: f32| {
+        let v = v.clamp(0.0, 1.0);
+        if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+    };
+    [enc(c[0]), enc(c[1]), enc(c[2])]
 }

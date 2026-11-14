@@ -63,6 +63,9 @@ struct Ui {
     mix_sat: Slider,
     mix_lum: Slider,
     grade_zone: adw::ComboRow,
+    /// the colour wheels (shadows, midtones, highlights, global) and the brightness slider under each
+    wheel_areas: Vec<gtk::DrawingArea>,
+    wheel_lums: Vec<gtk::Scale>,
     grade_hue: Slider,
     grade_amount: Slider,
     balance: Slider,
@@ -172,6 +175,8 @@ struct App {
     /// colour mixer and grading values (the panel shows one colour / zone at a time)
     mixer: RefCell<[[f32; 3]; 8]>,
     grade: RefCell<[[f32; 2]; 3]>,
+    grade_lum: RefCell<[f32; 3]>,
+    grade_global: RefCell<[f32; 2]>,
     /// undo history and where we are in it
     history: RefCell<Vec<Settings>>,
     history_pos: Cell<usize>,
@@ -314,6 +319,8 @@ impl App {
             saturation: pc(&u.saturation),
             mixer: *self.mixer.borrow(),
             grade: *self.grade.borrow(),
+            grade_lum: *self.grade_lum.borrow(),
+            grade_global: *self.grade_global.borrow(),
             balance: pc(&u.balance),
             clarity: pc(&u.clarity),
             texture: pc(&u.texture),
@@ -800,6 +807,27 @@ impl App {
     }
 
     /// Shows the mixer and grading sliders for the chosen colour and zone.
+    /// The hue (degrees) and amount (0..1) shown on a colour wheel.
+    fn wheel_value(&self, i: usize) -> (f32, f32) {
+        if i < 3 {
+            let g = self.grade.borrow()[i];
+            (g[0], g[1])
+        } else {
+            let g = *self.grade_global.borrow();
+            (g[0], g[1])
+        }
+    }
+
+    fn set_wheel(&self, i: usize, hue: f32, amount: f32) {
+        if i < 3 {
+            self.grade.borrow_mut()[i] = [hue, amount];
+        } else {
+            *self.grade_global.borrow_mut() = [hue, amount];
+        }
+        self.show_mixer();
+        self.request_render();
+    }
+
     fn show_mixer(&self) {
         let u = &self.ui;
         let was = self.updating.replace(true);
@@ -810,6 +838,13 @@ impl App {
         let g = self.grade.borrow()[(u.grade_zone.selected() as usize).min(2)];
         u.grade_hue.set_value(g[0] as f64);
         u.grade_amount.set_value((g[1] * 100.0) as f64);
+        let lum = *self.grade_lum.borrow();
+        for (i, sc) in u.wheel_lums.iter().enumerate() {
+            sc.set_value(lum.get(i).copied().unwrap_or(0.0) as f64 * 100.0);
+        }
+        for a in &u.wheel_areas {
+            a.queue_draw();
+        }
         self.updating.set(was);
     }
 
@@ -861,6 +896,8 @@ impl App {
         pc(&u.saturation, a.saturation);
         *self.mixer.borrow_mut() = a.mixer;
         *self.grade.borrow_mut() = a.grade;
+        *self.grade_lum.borrow_mut() = a.grade_lum;
+        *self.grade_global.borrow_mut() = a.grade_global;
         pc(&u.balance, a.balance);
         pc(&u.clarity, a.clarity);
         pc(&u.texture, a.texture);
@@ -1379,6 +1416,27 @@ fn build(app: &adw::Application) {
     let grade_amount = slider("Amount", 0.0, 100.0, 1.0, 0.0, 0);
     let balance = slider("Balance", -100.0, 100.0, 1.0, 0.0, 0);
     balance.set_subtitle("Towards the shadows or the highlights");
+    // three colour wheels and a global one: drag the dot (hue = angle, amount = distance), double-click to reset
+    let wheel_grid = gtk::Grid::builder().column_homogeneous(true).row_spacing(10).column_spacing(10).margin_top(10).margin_bottom(10).margin_start(10).margin_end(10).build();
+    let mut wheel_areas: Vec<gtk::DrawingArea> = Vec::new();
+    let mut wheel_lums: Vec<gtk::Scale> = Vec::new();
+    for (i, name) in ["Shadows", "Midtones", "Highlights", "Global"].iter().enumerate() {
+        let cell = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        let label = gtk::Label::builder().label(*name).css_classes(["caption-heading"]).build();
+        let area = gtk::DrawingArea::builder().content_width(130).content_height(130).halign(gtk::Align::Center).build();
+        let lum = gtk::Scale::with_range(gtk::Orientation::Horizontal, -100.0, 100.0, 1.0);
+        lum.set_draw_value(false);
+        lum.add_mark(0.0, gtk::PositionType::Bottom, None);
+        lum.set_tooltip_text(Some("Brightness of this range"));
+        lum.set_visible(i < 3);
+        cell.append(&label);
+        cell.append(&area);
+        cell.append(&lum);
+        wheel_grid.attach(&cell, (i % 2) as i32, (i / 2) as i32, 1, 1);
+        wheel_areas.push(area);
+        wheel_lums.push(lum);
+    }
+    grade_row.add_row(&wheel_grid);
     grade_row.add_row(&grade_zone);
     for r in [&grade_hue, &grade_amount, &balance] {
         grade_row.add_row(&r.row);
@@ -1626,6 +1684,8 @@ fn build(app: &adw::Application) {
             mix_sat,
             mix_lum,
             grade_zone,
+            wheel_areas: wheel_areas.clone(),
+            wheel_lums: wheel_lums.clone(),
             grade_hue,
             grade_amount,
             balance,
@@ -1723,6 +1783,8 @@ fn build(app: &adw::Application) {
         last_note: RefCell::new(None),
         mixer: RefCell::new([[0.0; 3]; 8]),
         grade: RefCell::new([[0.0; 2]; 3]),
+        grade_lum: RefCell::new([0.0; 3]),
+        grade_global: RefCell::new([0.0; 2]),
         history: RefCell::new(Vec::new()),
         history_pos: Cell::new(0),
         zoom: Cell::new(1.0),
@@ -1914,6 +1976,102 @@ fn build(app: &adw::Application) {
             }
             let c = (a.ui.mix_colour.selected() as usize).min(7);
             a.mixer.borrow_mut()[c][i] = (r.value() / 100.0) as f32;
+            a.request_render();
+        });
+    }
+    for (i, area) in wheel_areas.iter().enumerate() {
+        {
+            let a = Rc::downgrade(&app);
+            area.set_draw_func(move |_, cr, w, h| {
+                let Some(a) = a.upgrade() else { return };
+                let (w, h) = (w as f64, h as f64);
+                let rad = (w.min(h) / 2.0 - 3.0).max(4.0);
+                let (cx, cy) = (w / 2.0, h / 2.0);
+                if let Ok(mut surf) = gtk::cairo::ImageSurface::create(gtk::cairo::Format::Rgb24, w as i32, h as i32) {
+                    let stride = surf.stride() as usize;
+                    if let Ok(mut data) = surf.data() {
+                        for y in 0..h as usize {
+                            for x in 0..w as usize {
+                                let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
+                                let r = (dx * dx + dy * dy).sqrt() / rad;
+                                let px = if r <= 1.0 {
+                                    let hue = (-dy).atan2(dx).to_degrees() as f32;
+                                    let c = adjust::wheel_rgb(hue, r as f32);
+                                    ((c[0] * 255.0) as u32) << 16 | ((c[1] * 255.0) as u32) << 8 | (c[2] * 255.0) as u32
+                                } else {
+                                    0x2d2d2d
+                                };
+                                let o = y * stride + x * 4;
+                                data[o..o + 4].copy_from_slice(&(0xFF00_0000u32 | px).to_le_bytes());
+                            }
+                        }
+                    }
+                    surf.mark_dirty();
+                    let _ = cr.set_source_surface(&surf, 0.0, 0.0);
+                    let _ = cr.paint();
+                }
+                let (hue, amount) = a.wheel_value(i);
+                let (px, py) = (cx + rad * amount as f64 * (hue as f64).to_radians().cos(), cy - rad * amount as f64 * (hue as f64).to_radians().sin());
+                cr.set_line_width(3.0);
+                cr.set_source_rgba(0.0, 0.0, 0.0, 0.7);
+                cr.arc(px, py, 6.0, 0.0, std::f64::consts::TAU);
+                let _ = cr.stroke();
+                cr.set_line_width(1.5);
+                cr.set_source_rgb(1.0, 1.0, 1.0);
+                cr.arc(px, py, 6.0, 0.0, std::f64::consts::TAU);
+                let _ = cr.stroke();
+            });
+        }
+        let pick = {
+            let (a, area) = (Rc::downgrade(&app), area.downgrade());
+            move |x: f64, y: f64| {
+                let (Some(a), Some(area)) = (a.upgrade(), area.upgrade()) else { return };
+                let (w, h) = (area.width() as f64, area.height() as f64);
+                let rad = (w.min(h) / 2.0 - 3.0).max(4.0);
+                let (dx, dy) = (x - w / 2.0, y - h / 2.0);
+                let amount = ((dx * dx + dy * dy).sqrt() / rad).min(1.0) as f32;
+                let hue = ((-dy).atan2(dx).to_degrees() as f32).rem_euclid(360.0);
+                a.set_wheel(i, hue, amount);
+            }
+        };
+        let drag = gtk::GestureDrag::new();
+        let start = Rc::new(Cell::new((0.0f64, 0.0f64)));
+        {
+            let (start, pick) = (start.clone(), pick.clone());
+            drag.connect_drag_begin(move |_, x, y| {
+                start.set((x, y));
+                pick(x, y);
+            });
+        }
+        {
+            let (start, pick) = (start.clone(), pick.clone());
+            drag.connect_drag_update(move |_, dx, dy| {
+                let s = start.get();
+                pick(s.0 + dx, s.1 + dy);
+            });
+        }
+        area.add_controller(drag);
+        let click = gtk::GestureClick::new();
+        {
+            let a = Rc::downgrade(&app);
+            click.connect_pressed(move |_, n, _, _| {
+                if n == 2 {
+                    if let Some(a) = a.upgrade() {
+                        a.set_wheel(i, 0.0, 0.0);
+                    }
+                }
+            });
+        }
+        area.add_controller(click);
+    }
+    for (i, sc) in wheel_lums.iter().enumerate().take(3) {
+        let a = Rc::downgrade(&app);
+        sc.connect_value_changed(move |sc| {
+            let Some(a) = a.upgrade() else { return };
+            if a.updating.get() {
+                return;
+            }
+            a.grade_lum.borrow_mut()[i] = (sc.value() / 100.0) as f32;
             a.request_render();
         });
     }

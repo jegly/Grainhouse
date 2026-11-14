@@ -68,6 +68,22 @@ pub fn run(args: Vec<String>) {
             "--colour" => s.colour = pick(&fx::COLOURS, &val(), "colour"),
             "--glow" => s.glow = pick(&fx::GLOW_NAMES, &val(), "glow"),
             "--diffusion" => s.diffusion = pick(&fx::diffusion::NAMES, &val(), "diffusion"),
+            "--grade-shadows" | "--grade-midtones" | "--grade-highlights" | "--grade-global" => {
+                let v: Vec<f32> = val().split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                let hs = [v.first().copied().unwrap_or(0.0), v.get(1).copied().unwrap_or(0.0)];
+                match a {
+                    "--grade-shadows" => s.adjust.grade[0] = hs,
+                    "--grade-midtones" => s.adjust.grade[1] = hs,
+                    "--grade-highlights" => s.adjust.grade[2] = hs,
+                    _ => s.adjust.grade_global = hs,
+                }
+            }
+            "--grade-lum" => {
+                let v: Vec<f32> = val().split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                for k in 0..3 {
+                    s.adjust.grade_lum[k] = v.get(k).copied().unwrap_or(0.0);
+                }
+            }
             "--halation" => s.develop.halation = true,
             "--halation-strength" => s.develop.halation_strength = val().parse().unwrap_or(1.0),
             "--halation-size" => s.develop.halation_size = val().parse().unwrap_or(1.0),
