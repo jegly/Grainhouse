@@ -6,6 +6,12 @@ Grainhouse includes these models and data:
   Apache-2.0 (https://github.com/google-ai-edge/mediapipe).
 - Real-ESRGAN (RealESRGAN_x4plus, realesr-general-x4v3, realesr-general-wdn-x4v3) by Xintao Wang et al.,
   BSD-3-Clause (https://github.com/xinntao/Real-ESRGAN), converted to ONNX by tools/esrgan_to_onnx.py.
+- The 22 looks in the Spektrafilm group are derived from spektrafilm by Andrea Volpato
+  (https://github.com/andreavolpato/spektrafilm), licensed CC BY-SA 4.0 (see SPEKTRAFILM_LICENSE.txt). They were
+  modified: the exposure was set to 2.47 stops above mid grey, slide films were scanned instead of printed, the output
+  was scaled so base white reaches display white, the grey curve was blended 45% towards the film curve with the
+  black point lifted to 0.025, and the result was fitted to a tone curve and a 3x3 matrix. These looks stay under
+  CC BY-SA 4.0.
 
 It is built with, among others:
 

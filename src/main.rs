@@ -1322,7 +1322,7 @@ fn build(app: &adw::Application) {
 
     let film_group = adw::PreferencesGroup::builder()
         .title("Film")
-        .description("153 film stocks (\u{25c6} = designed looks), 24 Creative looks, and your own .cube files under My LUTs")
+        .description("238 film stocks (\u{25c6} = designed looks), 24 Creative looks, and your own .cube files under My LUTs")
         .build();
     let lut_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     let add_lut = gtk::Button::builder().label("Add LUTs\u{2026}").tooltip_text("Add .cube files to My LUTs").css_classes(["flat"]).valign(gtk::Align::Center).build();
