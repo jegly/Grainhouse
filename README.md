@@ -2,7 +2,7 @@
 
 A photo editor for Linux with film looks, AI effects and proper editing tools, all in one window.
 
-Drop in a RAW file or a JPEG, pick a film stock, push the light around, add an effect, and export. It does the everyday editing you'd do in Lightroom (white balance, tone curve, colour mixer, masks, noise reduction, lens corrections) and then the things Lightroom doesn't: 153 film stocks, camera looks, AI effects that find the people in your photo, diffusion filters, film frames, and Real-ESRGAN upscaling on export.
+Drop in a RAW file or a JPEG, pick a film stock, push the light around, add an effect, and export. It does the everyday editing you'd do in Lightroom (white balance, tone curve, colour mixer, masks, noise reduction, lens corrections) and then the things Lightroom doesn't: 238 film stocks, camera looks, AI effects that find the people in your photo, diffusion filters, film frames, and Real-ESRGAN upscaling on export.
 
 Everything runs on your own computer. No account, no cloud, no subscription.
 
@@ -24,7 +24,7 @@ Everything runs on your own computer. No account, no cloud, no subscription.
 
 ### Looks
 
-- **153 film stocks** from Polaroid, Ilford, Kodak, Fujifilm and cinema film (CineStill, Vision3, Eterna and more), each with a strength control
+- **238 film stocks** from Polaroid, Ilford, Kodak, Fujifilm and cinema film (CineStill, Vision3, Eterna and more), each with a strength control
 - **24 creative looks**: teal and orange, bleach bypass, cross process, day for night, cinema print, neon noir, golden hour, Technicolor, cyanotype, selenium and more
 - **Your own LUTs**: add `.cube` files, or a whole folder of them, and they show up under My LUTs. They're applied in full, so they look exactly as they should
 - **Camera looks**: the colour and character of other cameras, from a Leica CCD or a Ricoh GR to a 2000s compact, a disposable, a Holga and a Game Boy Camera. With an optional orange date stamp in the corner, taken from when the photo was shot

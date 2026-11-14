@@ -28,6 +28,28 @@
 27.bin|HPS 800|Ilford|Black & white|8.4
 28.bin|Pan F Plus 50|Ilford|Black & white|8.6
 29.bin|XP2|Ilford|Black & white|6.3
+153.bin|Ortho Plus 80|Ilford|Black & white|-1.0
+154.bin|SFX 200|Ilford|Black & white|-1.0
+155.bin|Kentmere 400|Ilford|Black & white|-1.0
+156.bin|APX 25|Agfa|Black & white|11.2
+157.bin|APX 100|Agfa|Black & white|9.8
+158.bin|Precisa 100|Agfa|Slide|9.6
+159.bin|Ultra Color 100|Agfa|Colour|10.7
+160.bin|Vista 200|Agfa|Colour|9.1
+161.bin|Optima 200|Agfa|Colour|-1.0
+162.bin|Scala 200X|Agfa|Black & white|-1.0
+163.bin|IR 400|Rollei|Black & white|18.5
+164.bin|Ortho 25|Rollei|Black & white|11.4
+165.bin|Retro 100 Tonal|Rollei|Black & white|8.4
+166.bin|Retro 80S|Rollei|Black & white|10.6
+167.bin|Harman Phoenix 200|More film|Colour|-1.0
+168.bin|ORWO Wolfen NC500|More film|Colour|-1.0
+169.bin|Adox Color Mission 200|More film|Colour|-1.0
+170.bin|Fomapan 100|More film|Black & white|-1.0
+171.bin|Fomapan 400|More film|Black & white|-1.0
+172.bin|Adox CMS 20|More film|Black & white|-1.0
+173.bin|JCH StreetPan 400|More film|Black & white|-1.0
+174.bin|Bergger Pancro 400|More film|Black & white|-1.0
 30.bin|BW400CN|Kodak|Black & white|5.5
 31.bin|ColorPlus 200|Kodak|Colour|-1.0
 32.bin|Ektachrome 100VS|Kodak|Slide|4.6
@@ -59,6 +81,17 @@
 58.bin|T-Max 400|Kodak|Black & white|8.2
 59.bin|Tri-X 400|Kodak|Colour|8.1
 60.bin|Ultramax 400|Kodak|Colour|-1.0
+175.bin|Gold 100|Kodak|Colour|-1.0
+176.bin|Gold 400|Kodak|Colour|-1.0
+177.bin|Pro Image 100|Kodak|Colour|-1.0
+178.bin|Ektachrome E100|Kodak|Slide|-1.0
+179.bin|Ektachrome Panther 100|Kodak|Slide|-1.0
+180.bin|Ektachrome Elite 100|Kodak|Slide|-1.0
+181.bin|Vericolor III|Kodak|Colour|-1.0
+182.bin|Aerochrome|Kodak|Infrared|-1.0
+183.bin|Plus-X 125|Kodak|Black & white|-1.0
+184.bin|Panatomic-X|Kodak|Black & white|-1.0
+185.bin|Technical Pan|Kodak|Black & white|-1.0
 61.bin|160C|Fujifilm|Colour|9.6
 62.bin|800Z|Fujifilm|Colour|13.0
 63.bin|Astia 100|Fujifilm|Slide|2.2
@@ -107,6 +140,21 @@
 106.bin|X-Trans Provia|Fujifilm|Colour|11.3
 107.bin|X-Trans Sepia|Fujifilm|Black & white|8.0
 108.bin|X-Trans Velvia|Fujifilm|Colour|13.1
+186.bin|Velvia 100F|Fujifilm|Slide|-1.0
+187.bin|Velvia 50 Medium Format|Fujifilm|Slide|-1.0
+188.bin|Provia 100F Medium Format|Fujifilm|Slide|-1.0
+189.bin|Velvia 100F Medium Format|Fujifilm|Slide|-1.0
+190.bin|Velvia 50 Polarised|Fujifilm|Slide|-1.0
+191.bin|Fortia SP|Fujifilm|Slide|-1.0
+192.bin|Natura 1600|Fujifilm|Colour|-1.0
+193.bin|Pro 160NS|Fujifilm|Colour|-1.0
+194.bin|Industrial 100|Fujifilm|Colour|-1.0
+195.bin|Fujicolor 100|Fujifilm|Colour|-1.0
+196.bin|Fujicolor HR 100|Fujifilm|Colour|-1.0
+197.bin|X-Trans Classic Neg|Fujifilm|Colour|-1.0
+198.bin|X-Trans Nostalgic Neg|Fujifilm|Colour|-1.0
+199.bin|X-Trans Eterna|Fujifilm|Colour|-1.0
+200.bin|X-Trans Reala Ace|Fujifilm|Colour|-1.0
 109.bin|CineStill 800T|Cine|Cine|-1.0
 110.bin|CineStill 800T Cool|Cine|Cine|-1.0
 111.bin|CineStill 50D|Cine|Cine|-1.0
@@ -151,3 +199,40 @@
 150.bin|Kodak 2383 Print|Cine|Cinema print|17.3
 151.bin|Kodak 2393 Print|Cine|Cinema print|18.9
 152.bin|Kodak 2302 B&W Print|Cine|Cine|-1.0
+201.bin|CineStill 800T Pushed|Cine|Cine|-1.0
+202.bin|CineStill Redrum 200|Cine|Cine|-1.0
+203.bin|Kodak Vision3 500T Pushed|Cine|Cine|-1.0
+204.bin|Eastman 5247|Cine|Cine|-1.0
+205.bin|Eastman 5254|Cine|Cine|-1.0
+206.bin|Nordic Noir|Cine|Cine|-1.0
+207.bin|Hong Kong Neon|Cine|Cine|-1.0
+208.bin|Paris Gold|Cine|Cine|-1.0
+209.bin|Silver Screen|Cine|Black & white|-1.0
+210.bin|Portra 160|Spektrafilm|Colour|10.7
+211.bin|Portra 400|Spektrafilm|Colour|10.7
+212.bin|Portra 800|Spektrafilm|Colour|9.8
+213.bin|Portra 800 Push 1|Spektrafilm|Colour|13.5
+214.bin|Portra 800 Push 2|Spektrafilm|Colour|16.3
+215.bin|Gold 200|Spektrafilm|Colour|10.6
+216.bin|Ultramax 400|Spektrafilm|Colour|10.2
+217.bin|Ektar 100|Spektrafilm|Colour|11.7
+218.bin|Fuji C200|Spektrafilm|Colour|11.8
+219.bin|Fuji Pro 400H|Spektrafilm|Colour|9.7
+220.bin|Fuji X-TRA 400|Spektrafilm|Colour|13.4
+221.bin|Provia 100F|Spektrafilm|Slide|8.5
+222.bin|Velvia 100|Spektrafilm|Slide|10.2
+223.bin|Ektachrome 100|Spektrafilm|Slide|8.2
+224.bin|Kodachrome 64|Spektrafilm|Slide|8.3
+225.bin|Vision3 50D on 2383|Spektrafilm|Cine|9.5
+226.bin|Vision3 250D on 2383|Spektrafilm|Cine|9.4
+227.bin|Vision3 200T on 2383|Spektrafilm|Cine|10.4
+228.bin|Vision3 500T on 2383|Spektrafilm|Cine|9.8
+229.bin|Vision3 250D on 2393|Spektrafilm|Cine|9.6
+230.bin|Vision3 500T on 2393|Spektrafilm|Cine|10.1
+231.bin|Verita 200D on 2383|Spektrafilm|Cine|10.0
+232.bin|Pastel Sky|Moods|Colour|-1.0
+233.bin|Pastel Portrait|Moods|Colour|-1.0
+234.bin|Airy Blue|Moods|Colour|-1.0
+235.bin|Lilac Dusk|Moods|Colour|-1.0
+236.bin|Nordic Night|Moods|Colour|-1.0
+237.bin|Deep Sky|Moods|Colour|-1.0
