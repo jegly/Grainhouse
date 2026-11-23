@@ -90,7 +90,7 @@ Download the latest release from the [releases page](https://github.com/jegly/gr
 **Ubuntu and Debian (.deb):**
 
 ```
-sudo apt install ./grainhouse_1.1.0_amd64.deb
+sudo apt install ./grainhouse_1.1.1_amd64.deb
 ```
 
 **Snap:**
@@ -104,14 +104,15 @@ To open photos from a USB drive or SD card with the snap, run `sudo snap connect
 <!-- release-checksums:start -->
 | File | SHA-256 |
 |---|---|
-| `grainhouse_1.1.0_amd64.deb` | *sha256:4faf3de07b70649d6dd9ffc63ad21f33d16d9f54e8f03da14be73bfb64d5a7ff* |
-| `grainhouse_1.1.0_amd64.snap` | *sha256:bdcb61cec55fb586ca2dcdee4b7e9d732c92db67c3157e9ae2eb41b237595c9b* |
+| `grainhouse_1.1.1_amd64.deb` | *sha256:37ce366fc4f9ab287de3fbeb2f293f2cb4b03b7bf58a54ac95747bd3fcda9767* |
 
 Verify a download:
 
 ```bash
-sha256sum grainhouse_1.1.0_amd64.deb grainhouse_1.1.0_amd64.snap
+sha256sum grainhouse_1.1.1_amd64.deb
 ```
+
+The [build attestation](https://github.com/jegly/Grainhouse/attestations) shows it was built by this repository's release workflow (with the GitHub CLI: `gh attestation verify grainhouse_1.1.1_amd64.deb --repo jegly/Grainhouse`).
 <!-- release-checksums:end -->
 
 Then open Grainhouse from your app menu, or right-click a photo in Files and choose Open With Grainhouse.
